@@ -21,10 +21,12 @@ const FRONTEND_DIR = path.join(__dirname, '..', 'frontend');
 const awsRegion = process.env.AWS_REGION || 'us-east-1';
 
 // AWS SDK Clients
-const s3 = process.env.AWS_ACCESS_KEY_ID ? new AWS.S3({ region: awsRegion }) : null;
-const sqs = process.env.AWS_ACCESS_KEY_ID ? new AWS.SQS({ region: awsRegion }) : null;
-const sns = process.env.AWS_ACCESS_KEY_ID ? new AWS.SNS({ region: awsRegion }) : null;
-const dynamodb = process.env.AWS_ACCESS_KEY_ID ? new AWS.DynamoDB.DocumentClient({ region: awsRegion }) : null;
+// Os clientes são criados quando o recurso está configurado (variável do recurso).
+// Na EC2 as credenciais vêm da IAM Role (instance profile), então NÃO dependemos de AWS_ACCESS_KEY_ID.
+const s3 = process.env.S3_BUCKET_NAME ? new AWS.S3({ region: awsRegion }) : null;
+const sqs = process.env.SQS_QUEUE_URL ? new AWS.SQS({ region: awsRegion }) : null;
+const sns = process.env.SNS_TOPIC_ARN ? new AWS.SNS({ region: awsRegion }) : null;
+const dynamodb = process.env.DYNAMODB_TABLE_NAME ? new AWS.DynamoDB.DocumentClient({ region: awsRegion }) : null;
 
 // Multer para upload de imagens (memória para repassar para S3 ou disco)
 const upload = multer({
@@ -38,7 +40,7 @@ const localAuditLogs = [];
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
-app.use(express.static(FRONTEND_DIR));
+app.use(express.static(FRONTEND_DIR, { extensions: ['html'] }));
 app.use('/uploads', express.static(UPLOADS_DIR));
 
 // Garante estrutura de arquivos locais para fallback
@@ -54,43 +56,43 @@ function ensureDirectories() {
   const initialEvents = [
     {
       id: 'match-1',
-      teamHome: 'São Paulo FC',
-      teamAway: 'Palmeiras',
-      stadium: 'Estádio do Morumbi',
-      date: '2026-10-15T18:30:00',
-      price: 120.00,
+      teamHome: 'Fortaleza',
+      teamAway: 'Ceará',
+      stadium: 'Arena Castelão',
+      date: '2026-10-25T16:00:00',
+      price: 80.00,
       available: 320,
       category: 'Arquibancada',
-      description: 'Clássico Choque-Rei pelo Campeonato Brasileiro',
-      bannerUrl: 'https://images.unsplash.com/photo-1508098682722-e99c43a406b2?auto=format&fit=crop&w=600&q=80',
+      description: 'Clássico-Rei pelo Campeonato Brasileiro',
+      bannerUrl: null,
       thumbnailUrl: null,
       processingStatus: 'completed'
     },
     {
       id: 'match-2',
-      teamHome: 'Flamengo',
-      teamAway: 'Vasco',
-      stadium: 'Maracanã',
-      date: '2026-10-22T20:00:00',
-      price: 180.00,
+      teamHome: 'Ceará',
+      teamAway: 'Sport',
+      stadium: 'Arena Castelão',
+      date: '2026-11-01T18:30:00',
+      price: 60.00,
       available: 210,
       category: 'Cadeiras laterais',
-      description: 'Clássico dos Milhões no Maracanã lotado',
-      bannerUrl: 'https://images.unsplash.com/photo-1522778119026-d647f0596c20?auto=format&fit=crop&w=600&q=80',
+      description: 'Rodada do Campeonato Brasileiro no Castelão',
+      bannerUrl: null,
       thumbnailUrl: null,
       processingStatus: 'completed'
     },
     {
       id: 'match-3',
-      teamHome: 'Grêmio',
-      teamAway: 'Internacional',
-      stadium: 'Arena do Grêmio',
-      date: '2026-10-29T19:45:00',
-      price: 150.00,
+      teamHome: 'Ferroviário',
+      teamAway: 'Fortaleza',
+      stadium: 'Estádio Presidente Vargas',
+      date: '2026-11-08T19:00:00',
+      price: 40.00,
       available: 260,
-      category: 'Superior',
-      description: 'O maior clássico do sul do país',
-      bannerUrl: 'https://images.unsplash.com/photo-1489944440615-453fc2b6a9a9?auto=format&fit=crop&w=600&q=80',
+      category: 'Arquibancada',
+      description: 'Jogo no tradicional Presidente Vargas',
+      bannerUrl: null,
       thumbnailUrl: null,
       processingStatus: 'completed'
     }
@@ -127,9 +129,18 @@ function saveStore(store) {
 // ----------------------------------------------------
 // 1. AMAZON RDS (PostgreSQL) - Camada Relacional
 // ----------------------------------------------------
+// O RDS PostgreSQL 16 exige SSL por padrão (rds.force_ssl=1).
+function getPgSsl() {
+  const target = `${process.env.DATABASE_URL || ''} ${process.env.DB_HOST || ''}`;
+  if (process.env.PG_SSL === 'true' || /rds\.amazonaws\.com/.test(target)) {
+    return { rejectUnauthorized: false };
+  }
+  return undefined;
+}
+
 function getPgConfig() {
   if (process.env.DATABASE_URL) {
-    return { connectionString: process.env.DATABASE_URL };
+    return { connectionString: process.env.DATABASE_URL, ssl: getPgSsl() };
   }
   if (process.env.DB_HOST) {
     return {
@@ -137,7 +148,8 @@ function getPgConfig() {
       port: process.env.DB_PORT || 5432,
       user: process.env.DB_USER || 'postgres',
       password: process.env.DB_PASSWORD || 'postgres',
-      database: process.env.DB_NAME || 'appdb'
+      database: process.env.DB_NAME || 'appdb',
+      ssl: getPgSsl()
     };
   }
   return null;
@@ -199,6 +211,19 @@ async function ensureRelationalSchema() {
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
     `);
+    // Semeia os jogos iniciais quando o banco está vazio (ON CONFLICT evita duplicar com várias instâncias)
+    const count = await client.query('SELECT COUNT(*)::int AS n FROM events');
+    if (count.rows[0].n === 0) {
+      for (const ev of loadStore().events || []) {
+        await client.query(
+          `INSERT INTO events (id, team_home, team_away, stadium, event_date, category, price, available, description, banner_url, thumbnail_url, processing_status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+           ON CONFLICT (id) DO NOTHING`,
+          [ev.id, ev.teamHome, ev.teamAway, ev.stadium, ev.date, ev.category, ev.price, ev.available,
+            ev.description, ev.bannerUrl, ev.thumbnailUrl, ev.processingStatus || 'completed']
+        );
+      }
+    }
     console.log('[RDS PostgreSQL] Schema relacional verificado com sucesso.');
   } catch (error) {
     console.warn('[RDS PostgreSQL] Erro ao sincronizar schema:', error.message);
@@ -640,6 +665,30 @@ async function dbPurchaseTickets(eventId, quantity, customerName, customerEmail)
 }
 
 // ----------------------------------------------------
+// ACESSO ADMINISTRATIVO
+// Se ADMIN_PASSWORD estiver definido, as rotas de CRUD/auditoria exigem token de admin.
+// Sem ADMIN_PASSWORD (desenvolvimento local/testes) as rotas ficam abertas.
+// ----------------------------------------------------
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
+
+function sha256(value) {
+  return crypto.createHash('sha256').update(String(value)).digest();
+}
+
+function requireAdmin(req, res, next) {
+  if (!ADMIN_PASSWORD) return next();
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    if (payload.role === 'admin') return next();
+  } catch (err) {
+    // token ausente/inválido
+  }
+  return res.status(401).json({ message: 'Acesso restrito ao administrador.' });
+}
+
+// ----------------------------------------------------
 // ROTAS DA API
 // ----------------------------------------------------
 
@@ -666,16 +715,25 @@ app.get('/health', (req, res) => {
 
 // 2. Rota para teste de estresse de CPU (Parte 2 - Demonstração Auto Scaling)
 app.get('/stress', (req, res) => {
-  const durationMs = Number(req.query.duration || 10000);
+  const durationMs = Math.min(Number(req.query.duration || 10000), 60000);
   const start = Date.now();
-  // Loop intensivo de CPU
-  while (Date.now() - start < durationMs) {
-    Math.sqrt(Math.random() * 1000000);
-  }
-  res.json({
-    message: `Carga de CPU executada por ${durationMs}ms`,
-    instance: os.hostname()
-  });
+  // Loop intensivo de CPU em fatias de 50ms, cedendo o event loop entre elas:
+  // a CPU vai a ~100% (dispara o Auto Scaling) sem travar o /health do ALB.
+  const tick = () => {
+    const sliceEnd = Date.now() + 50;
+    while (Date.now() < sliceEnd) {
+      Math.sqrt(Math.random() * 1000000);
+    }
+    if (Date.now() - start < durationMs) {
+      setImmediate(tick);
+    } else {
+      res.json({
+        message: `Carga de CPU executada por ${durationMs}ms`,
+        instance: os.hostname()
+      });
+    }
+  };
+  tick();
 });
 
 // 3. Listagem de Eventos com Cache no ElastiCache (Redis)
@@ -704,7 +762,7 @@ app.get('/events/:id', async (req, res) => {
 });
 
 // 5. Criação de Evento com Upload de Imagem e Desacoplamento via SQS/SNS
-app.post('/events', upload.single('banner'), async (req, res) => {
+app.post('/events', requireAdmin, upload.single('banner'), async (req, res) => {
   const { teamHome, teamAway, stadium, date, price, available, category, description } = req.body || {};
 
   if (!teamHome || !teamAway || !stadium || !date || !price) {
@@ -773,7 +831,7 @@ app.post('/events', upload.single('banner'), async (req, res) => {
 });
 
 // 6. Atualização de Evento (CRUD Update)
-app.put('/events/:id', upload.single('banner'), async (req, res) => {
+app.put('/events/:id', requireAdmin, upload.single('banner'), async (req, res) => {
   try {
     const existing = await dbGetEventById(req.params.id);
     if (!existing) {
@@ -822,7 +880,7 @@ app.put('/events/:id', upload.single('banner'), async (req, res) => {
 });
 
 // 7. Exclusão de Evento (CRUD Delete)
-app.delete('/events/:id', async (req, res) => {
+app.delete('/events/:id', requireAdmin, async (req, res) => {
   try {
     const deleted = await dbDeleteEvent(req.params.id);
     if (!deleted) {
@@ -875,7 +933,7 @@ app.post('/orders', async (req, res) => {
 });
 
 // 9. Listagem de Pedidos
-app.get('/orders', async (req, res) => {
+app.get('/orders', requireAdmin, async (req, res) => {
   const pg = await getPgClient();
   if (pg) {
     try {
@@ -891,7 +949,7 @@ app.get('/orders', async (req, res) => {
 });
 
 // 10. Listagem de Logs de Auditoria do DynamoDB (Para avaliação)
-app.get('/audit-logs', async (req, res) => {
+app.get('/audit-logs', requireAdmin, async (req, res) => {
   if (dynamodb && process.env.DYNAMODB_TABLE_NAME) {
     try {
       const scanResult = await dynamodb.scan({
@@ -930,6 +988,16 @@ app.post('/auth/register', (req, res) => {
 
   const token = jwt.sign({ sub: user.id, email: user.email, name: user.name }, JWT_SECRET, { expiresIn: '7d' });
   return res.status(201).json({ message: 'Usuário cadastrado com sucesso!', token, user });
+});
+
+app.post('/auth/admin', (req, res) => {
+  const { password } = req.body || {};
+  const ok = !ADMIN_PASSWORD || crypto.timingSafeEqual(sha256(password || ''), sha256(ADMIN_PASSWORD));
+  if (!ok) {
+    return res.status(401).json({ message: 'Senha de administrador inválida.' });
+  }
+  const token = jwt.sign({ sub: 'admin', role: 'admin' }, JWT_SECRET, { expiresIn: '12h' });
+  return res.json({ token, protected: !!ADMIN_PASSWORD });
 });
 
 app.post('/auth/login', (req, res) => {

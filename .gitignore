@@ -5,3 +5,4 @@ node_modules/
 *.tfstate.backup
 especificacao.txt
 backend/uploads/
+backend/data/

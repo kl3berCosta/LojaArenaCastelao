@@ -12,9 +12,10 @@ const DATA_FILE = path.join(DATA_DIR, 'store.json');
 const QUEUE_FILE = path.join(DATA_DIR, 'queue.json');
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
 
-const s3 = process.env.AWS_ACCESS_KEY_ID ? new AWS.S3({ region: awsRegion }) : null;
-const sqs = process.env.AWS_ACCESS_KEY_ID ? new AWS.SQS({ region: awsRegion }) : null;
-const dynamodb = process.env.AWS_ACCESS_KEY_ID ? new AWS.DynamoDB.DocumentClient({ region: awsRegion }) : null;
+// Credenciais vêm da IAM Role da EC2; o cliente é criado quando o recurso está configurado.
+const s3 = process.env.S3_BUCKET_NAME ? new AWS.S3({ region: awsRegion }) : null;
+const sqs = process.env.SQS_QUEUE_URL ? new AWS.SQS({ region: awsRegion }) : null;
+const dynamodb = process.env.DYNAMODB_TABLE_NAME ? new AWS.DynamoDB.DocumentClient({ region: awsRegion }) : null;
 
 let redisClient = null;
 
@@ -49,12 +50,22 @@ async function invalidateCache(keys = ['events:list']) {
   }
 }
 
+// O RDS PostgreSQL 16 exige SSL por padrão (rds.force_ssl=1).
+function getPgSsl() {
+  const target = `${process.env.DATABASE_URL || ''} ${process.env.DB_HOST || ''}`;
+  if (process.env.PG_SSL === 'true' || /rds\.amazonaws\.com/.test(target)) {
+    return { rejectUnauthorized: false };
+  }
+  return undefined;
+}
+
 async function getPgClient() {
   if (!process.env.DATABASE_URL && !process.env.DB_HOST) {
     return null;
   }
   try {
     const client = new Client({
+      ssl: getPgSsl(),
       connectionString: process.env.DATABASE_URL || `postgresql://${process.env.DB_USER || 'postgres'}:${process.env.DB_PASSWORD || 'postgres'}@${process.env.DB_HOST || 'localhost'}:${process.env.DB_PORT || 5432}/${process.env.DB_NAME || 'appdb'}`
     });
     await client.connect();

@@ -17,6 +17,11 @@ provider "aws" {
   region = var.aws_region
 }
 
+# Segredo JWT compartilhado por todas as instâncias do ASG
+resource "random_id" "jwt" {
+  byte_length = 24
+}
+
 # Sufixo aleatório para recursos que exigem nomes globais únicos (S3)
 resource "random_id" "suffix" {
   byte_length = 4
@@ -474,6 +479,8 @@ resource "aws_launch_template" "app" {
     dynamodb_table_name = aws_dynamodb_table.audit_logs.name
     sqs_queue_url       = aws_sqs_queue.banner_tasks.url
     sns_topic_arn       = aws_sns_topic.banner_tasks.arn
+    admin_password      = var.admin_password
+    jwt_secret          = random_id.jwt.hex
   }))
 
   tag_specifications {

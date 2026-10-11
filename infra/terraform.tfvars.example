@@ -17,3 +17,6 @@ repo_url = "https://github.com/Jeovani4lv3s/LojadeIngressos.git"
 # Caso esteja executando em conta do AWS Academy Learner Lab:
 # use_existing_lab_role = true
 # lab_role_name         = "LabRole"
+
+# Senha da página /admin (troque!)
+admin_password = "TroqueEstaSenha2026"

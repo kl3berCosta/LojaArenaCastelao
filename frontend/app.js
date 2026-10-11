@@ -1,535 +1,587 @@
-// Detecta dinamicamente a URL da API Node.js
-function getApiUrl() {
-  const devPorts = ['5500', '5501', '5502', '8080', '5173', '3001', '4200'];
-  // Se estiver abrindo como arquivo local ou via Live Server (portas comuns de desenvolvimento estático)
-  if (
-    window.location.protocol === 'file:' ||
-    devPorts.includes(window.location.port)
-  ) {
-    return 'http://localhost:3000';
+// Loja de Ingressos - Fluxo com autenticação e validação de login na compra
+const API = window.location.protocol === 'file:' ? 'http://localhost:3000' : '';
+const MAX_PER_ORDER = 6;
+const USER_KEY = 'ticket_user';
+const TOKEN_KEY = 'ticket_token';
+
+const STADIUMS = {
+  castelao: {
+    key: 'castelao',
+    name: 'Arena Castelão',
+    city: 'Fortaleza, CE',
+    test: /castel/i
+  },
+  vargas: {
+    key: 'vargas',
+    name: 'Estádio Presidente Vargas',
+    city: 'Fortaleza, CE',
+    test: /vargas/i
   }
-  // Se estiver acessando diretamente pelo Express (:3000) ou em produção na nuvem (ALB / porta 80)
-  return window.location.origin;
-}
+};
 
-const API_URL = getApiUrl();
-console.log(`[Stadium Tickets] Conectado à API em: ${API_URL}`);
+const state = {
+  events: [],
+  event: null,
+  quantity: 1,
+  order: null,
+  user: null,
+  filter: 'all'
+};
 
-const tokenKey = 'stadium_ticket_token';
-let currentEvents = [];
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const norm = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+const money = (n) => Number(n).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 
-function getToken() {
-  return localStorage.getItem(tokenKey);
-}
-
-function setToken(token) {
-  if (token) {
-    localStorage.setItem(tokenKey, token);
-  } else {
-    localStorage.removeItem(tokenKey);
-  }
-}
-
-function updateUserStatus() {
-  const token = getToken();
-  const userStatus = document.getElementById('user-status');
-  if (!userStatus) return;
-
-  if (!token) {
-    userStatus.textContent = 'Faça login para comprar';
-    return;
-  }
-
+function loadSavedUser() {
   try {
-    const payload = JSON.parse(atob(token.split('.')[1] || ''));
-    userStatus.textContent = `Torcedor: ${payload.name || payload.email || 'Conectado'}`;
+    const raw = localStorage.getItem(USER_KEY);
+    if (raw) state.user = JSON.parse(raw);
   } catch (e) {
-    userStatus.textContent = 'Conectado';
+    state.user = null;
   }
 }
 
-// Helper seguro para chamadas à API com tratamento de erros amigável
-async function safeFetchJson(url, options = {}) {
-  let response;
-  try {
-    response = await fetch(url, options);
-  } catch (netErr) {
-    throw new Error(
-      `Não foi possível conectar ao backend em ${API_URL}. Certifique-se de que o servidor Node.js está em execução (execute 'npm start' na pasta backend).`
-    );
-  }
-
-  const text = await response.text();
-  let data = null;
-
-  try {
-    data = text ? JSON.parse(text) : {};
-  } catch (jsonErr) {
-    throw new Error(
-      `O servidor respondeu HTTP ${response.status} (${response.statusText || 'Erro'}), mas não retornou JSON. Verifique se o backend está rodando na porta 3000!`
-    );
-  }
-
-  if (!response.ok) {
-    throw new Error(data.message || `Erro HTTP ${response.status}: ${response.statusText}`);
-  }
-
-  return data;
-}
-
-// -------------------------------------------------------------------
-// 1. MONITORAMENTO DOS 6 SERVIÇOS AWS (/health)
-// -------------------------------------------------------------------
-async function loadHealthStatus() {
-  try {
-    const data = await safeFetchJson(`${API_URL}/health`);
-
-    const instanceBadge = document.getElementById('instance-badge');
-    if (instanceBadge && data.instance) {
-      instanceBadge.textContent = `Host: ${data.instance.hostname} | API: ${API_URL}`;
-    }
-
-    const services = data.awsServices || {};
-
-    const setIndicator = (id, active, textOnline, textOffline) => {
-      const el = document.getElementById(id);
-      if (!el) return;
-      el.className = `status-indicator ${active ? 'online' : 'offline'}`;
-      el.textContent = active ? textOnline : textOffline;
-    };
-
-    setIndicator('status-ec2', true, typeof services.ec2 === 'string' ? services.ec2 : 'EC2 Conectada', 'Local');
-    setIndicator('status-rds', services.rds, 'RDS PostgreSQL', 'Store Fallback');
-    setIndicator('status-elasticache', services.elasticache, 'Redis Ativo', 'Cache Local');
-    setIndicator('status-s3', services.s3, 'S3 Bucket Ativo', 'Uploads Local');
-    setIndicator('status-dynamodb', services.dynamodb, 'DynamoDB NoSQL', 'Logs em Memória');
-    setIndicator('status-sqs', services.sqsSns, 'SQS / SNS Ativo', 'Worker Fila Local');
-  } catch (error) {
-    console.warn('Falha ao checar saúde dos serviços:', error.message);
-    const instanceBadge = document.getElementById('instance-badge');
-    if (instanceBadge) {
-      instanceBadge.textContent = `Backend offline em ${API_URL}`;
-    }
+function saveUser(user, token) {
+  state.user = user;
+  localStorage.setItem(USER_KEY, JSON.stringify(user));
+  if (token) localStorage.setItem(TOKEN_KEY, token);
+  renderUserNav();
+  if (state.event) {
+    renderStep2();
   }
 }
 
-// -------------------------------------------------------------------
-// 2. LISTAGEM DE JOGOS (READ) COM CACHE NO REDIS E DADOS NO RDS
-// -------------------------------------------------------------------
+function logoutUser() {
+  state.user = null;
+  localStorage.removeItem(USER_KEY);
+  localStorage.removeItem(TOKEN_KEY);
+  renderUserNav();
+  if (!document.getElementById('step-2').classList.contains('hidden')) {
+    renderStep2();
+  } else if (!document.getElementById('step-3').classList.contains('hidden')) {
+    showStep(2);
+    renderStep2();
+  }
+}
+
+function stadiumKeyOf(ev) {
+  const s = norm(ev.stadium);
+  return Object.values(STADIUMS).find((st) => st.test.test(s))?.key || 'outro';
+}
+
+function formatGameDate(iso) {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' });
+  } catch (e) {
+    return iso;
+  }
+}
+
+function formatGameTime(iso) {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  } catch (e) {
+    return '';
+  }
+}
+
+function upcoming(events) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return events
+    .filter((e) => new Date(e.date) >= today)
+    .sort((a, b) => new Date(a.date) - new Date(b.date));
+}
+
 async function loadEvents() {
-  const eventList = document.getElementById('event-list');
-  const eventSelect = document.getElementById('event-select');
-  if (!eventList || !eventSelect) return;
+  const res = await fetch(`${API}/events`);
+  if (!res.ok) throw new Error('Não foi possível carregar os jogos.');
+  state.events = upcoming(await res.json());
+}
+
+/* ---------- Navegação entre etapas (1 a 4) ---------- */
+function showStep(n) {
+  document.querySelectorAll('.step').forEach((el) => el.classList.add('hidden'));
+  const targetStep = $(`step-${n}`);
+  if (targetStep) targetStep.classList.remove('hidden');
+
+  document.querySelectorAll('#stepper li').forEach((li) => {
+    const s = Number(li.dataset.step);
+    li.classList.toggle('active', s === n);
+    li.classList.toggle('done', s < n);
+    li.querySelector('.dot').textContent = s < n ? '✓' : s;
+  });
+
+  const comprarSection = $('comprar');
+  if (comprarSection) {
+    comprarSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
+document.querySelectorAll('[data-back]').forEach((btn) =>
+  btn.addEventListener('click', () => showStep(Number(btn.dataset.back)))
+);
+
+/* ---------- Badges de estoque ---------- */
+function stockBadge(ev) {
+  if (ev.available <= 0) return '<span class="stock out">Esgotado</span>';
+  if (ev.available < 30) return `<span class="stock low">Últimos ${ev.available}</span>`;
+  return `<span class="stock ok">${ev.available} disponíveis</span>`;
+}
+
+/* ---------- Renderização do Topbar com usuário ---------- */
+function renderUserNav() {
+  const container = $('user-nav');
+  if (!container) return;
+
+  if (state.user) {
+    container.innerHTML = `
+      <div class="user-session">
+        <span class="user-pill">👤 <strong>${esc(state.user.name)}</strong></span>
+        <button type="button" class="btn-logout" id="btn-logout" title="Sair da conta">Sair</button>
+      </div>
+    `;
+    $('btn-logout').addEventListener('click', logoutUser);
+  } else {
+    container.innerHTML = `
+      <button type="button" class="btn-auth-trigger" id="btn-open-login">
+        👤 Entrar / Cadastrar
+      </button>
+    `;
+    $('btn-open-login').addEventListener('click', () => openAuthModal());
+  }
+}
+
+/* ---------- Modal de Autenticação ---------- */
+function openAuthModal(onSuccessCallback) {
+  const modal = $('auth-modal');
+  modal.classList.remove('hidden');
+  $('login-error').classList.add('hidden');
+  $('register-error').classList.add('hidden');
+  switchAuthTab('login');
+  modal._onSuccess = onSuccessCallback;
+}
+
+function closeAuthModal() {
+  const modal = $('auth-modal');
+  modal.classList.add('hidden');
+  modal._onSuccess = null;
+}
+
+function switchAuthTab(tab) {
+  const isLogin = tab === 'login';
+  $('tab-login-btn').classList.toggle('active', isLogin);
+  $('tab-register-btn').classList.toggle('active', !isLogin);
+  $('form-login').classList.toggle('hidden', !isLogin);
+  $('form-register').classList.toggle('hidden', isLogin);
+  $('login-error').classList.add('hidden');
+  $('register-error').classList.add('hidden');
+}
+
+$('auth-close-btn').addEventListener('click', closeAuthModal);
+$('tab-login-btn').addEventListener('click', () => switchAuthTab('login'));
+$('tab-register-btn').addEventListener('click', () => switchAuthTab('register'));
+
+// Fechar modal ao clicar fora
+$('auth-modal').addEventListener('click', (e) => {
+  if (e.target === $('auth-modal')) closeAuthModal();
+});
+
+// Submit Login
+$('form-login').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const email = $('login-email').value.trim();
+  const password = $('login-password').value;
+  const btn = $('btn-submit-login');
+  const err = $('login-error');
+
+  btn.disabled = true;
+  btn.textContent = 'Verificando...';
+  err.classList.add('hidden');
 
   try {
-    const events = await safeFetchJson(`${API_URL}/events`);
-
-    if (!Array.isArray(events)) {
-      throw new Error('Formato inválido de resposta dos eventos');
-    }
-
-    currentEvents = events;
-
-    if (events.length === 0) {
-      eventList.innerHTML = '<div class="empty-state">Nenhum jogo cadastrado no momento. Cadastre um novo jogo abaixo!</div>';
-      eventSelect.innerHTML = '<option value="">Nenhum jogo disponível</option>';
-      return;
-    }
-
-    eventList.innerHTML = events
-      .map((event) => {
-        let imageSrc = event.thumbnailUrl || event.bannerUrl || 'https://images.unsplash.com/photo-1508098682722-e99c43a406b2?auto=format&fit=crop&w=600&q=80';
-        if (imageSrc.startsWith('/')) {
-          imageSrc = `${API_URL}${imageSrc}`;
-        }
-
-        const isWorkerPending = event.processingStatus === 'pending';
-        const isLowStock = Number(event.available) <= 20;
-
-        return `
-          <article class="event-card" id="card-${event.id}">
-            <div class="event-image-container">
-              <img src="${imageSrc}" alt="${event.teamHome} x ${event.teamAway}" class="event-image" onerror="this.src='https://images.unsplash.com/photo-1508098682722-e99c43a406b2?auto=format&fit=crop&w=600&q=80'" />
-              ${isWorkerPending ? '<span class="badge-pending">⏳ Worker SQS Processando...</span>' : ''}
-              ${event.thumbnailUrl ? '<span class="badge-processed">✨ Thumbnail Otimizado S3</span>' : ''}
-            </div>
-
-            <div class="event-content">
-              <h3>${event.teamHome} x ${event.teamAway}</h3>
-              <p class="event-desc">${event.description || 'Confronto válido pelo campeonato oficial.'}</p>
-              
-              <div class="event-meta">
-                <span>📍 <strong>Estádio:</strong> ${event.stadium}</span>
-                <span>📅 <strong>Data:</strong> ${new Date(event.date).toLocaleString('pt-BR')}</span>
-                <span>🎫 <strong>Setor:</strong> ${event.category || 'Geral'}</span>
-                <span class="event-stock ${isLowStock ? 'low-stock' : ''}">
-                  🎟️ <strong>Restantes:</strong> ${event.available} ingressos
-                </span>
-              </div>
-
-              <div class="event-card-actions">
-                <div class="price-tag">R$ ${Number(event.price).toFixed(2)}</div>
-                <div class="btn-group">
-                  <button class="btn btn-sm btn-primary" onclick="selectEventForBuy('${event.id}')">🛒 Comprar</button>
-                  <button class="btn btn-sm btn-outline" onclick="openEditModal('${event.id}')" title="Editar jogo">✏️</button>
-                  <button class="btn btn-sm btn-danger" onclick="deleteEvent('${event.id}')" title="Excluir jogo">🗑️</button>
-                </div>
-              </div>
-            </div>
-          </article>
-        `;
-      })
-      .join('');
-
-    eventSelect.innerHTML = events
-      .map(
-        (event) => `<option value="${event.id}" data-price="${event.price}">${event.teamHome} x ${event.teamAway} - R$ ${Number(event.price).toFixed(2)} (${event.available} restantes)</option>`
-      )
-      .join('');
-
-    updateCheckoutPreview();
-  } catch (error) {
-    eventList.innerHTML = `<p class="error-text">${error.message}</p>`;
-    console.error(error);
-  }
-}
-
-// -------------------------------------------------------------------
-// 3. CRUD: CREATE (Cadastrar Novo Evento com Upload S3 e Fila SQS)
-// -------------------------------------------------------------------
-const eventCreateForm = document.getElementById('event-create-form');
-if (eventCreateForm) {
-  eventCreateForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const resultNode = document.getElementById('create-result');
-    resultNode.className = 'result-message';
-    resultNode.textContent = 'Enviando dados para o RDS e imagem para o S3...';
-
-    const formData = new FormData();
-    formData.append('teamHome', document.getElementById('create-team-home').value.trim());
-    formData.append('teamAway', document.getElementById('create-team-away').value.trim());
-    formData.append('stadium', document.getElementById('create-stadium').value.trim());
-    formData.append('date', document.getElementById('create-date').value);
-    formData.append('price', document.getElementById('create-price').value);
-    formData.append('available', document.getElementById('create-available').value);
-    formData.append('category', document.getElementById('create-category').value.trim());
-    formData.append('description', document.getElementById('create-description').value.trim());
-
-    const bannerFile = document.getElementById('create-banner').files[0];
-    if (bannerFile) {
-      formData.append('banner', bannerFile);
-    }
-
-    try {
-      const data = await safeFetchJson(`${API_URL}/events`, {
-        method: 'POST',
-        body: formData
-      });
-
-      resultNode.classList.add('success');
-      resultNode.textContent = `✅ ${data.message} ${data.decoupledProcessing ? '(Banner enfileirado para o Worker via ' + data.decoupledProcessing.provider + ')' : ''}`;
-      eventCreateForm.reset();
-
-      await loadEvents();
-      await loadAuditLogs();
-    } catch (error) {
-      resultNode.classList.add('error');
-      resultNode.textContent = `❌ ${error.message}`;
-    }
-  });
-}
-
-// -------------------------------------------------------------------
-// 4. CRUD: UPDATE (Editar Evento via Modal)
-// -------------------------------------------------------------------
-const editModal = document.getElementById('edit-modal');
-const eventEditForm = document.getElementById('event-edit-form');
-
-window.openEditModal = function (eventId) {
-  const event = currentEvents.find((e) => e.id === eventId);
-  if (!event) return;
-
-  document.getElementById('edit-event-id').value = event.id;
-  document.getElementById('edit-team-home').value = event.teamHome;
-  document.getElementById('edit-team-away').value = event.teamAway;
-  document.getElementById('edit-stadium').value = event.stadium;
-  
-  if (event.date) {
-    const d = new Date(event.date);
-    const localIso = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-    document.getElementById('edit-date').value = localIso;
-  }
-
-  document.getElementById('edit-price').value = event.price;
-  document.getElementById('edit-available').value = event.available;
-  document.getElementById('edit-category').value = event.category || 'Geral';
-  document.getElementById('edit-description').value = event.description || '';
-  document.getElementById('edit-result').textContent = '';
-
-  editModal.style.display = 'flex';
-};
-
-window.closeEditModal = function () {
-  editModal.style.display = 'none';
-};
-
-document.getElementById('btn-close-modal')?.addEventListener('click', closeEditModal);
-document.getElementById('btn-cancel-edit')?.addEventListener('click', closeEditModal);
-
-if (eventEditForm) {
-  eventEditForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const eventId = document.getElementById('edit-event-id').value;
-    const resultNode = document.getElementById('edit-result');
-    resultNode.className = 'result-message';
-    resultNode.textContent = 'Atualizando evento no RDS...';
-
-    const formData = new FormData();
-    formData.append('teamHome', document.getElementById('edit-team-home').value.trim());
-    formData.append('teamAway', document.getElementById('edit-team-away').value.trim());
-    formData.append('stadium', document.getElementById('edit-stadium').value.trim());
-    formData.append('date', document.getElementById('edit-date').value);
-    formData.append('price', document.getElementById('edit-price').value);
-    formData.append('available', document.getElementById('edit-available').value);
-    formData.append('category', document.getElementById('edit-category').value.trim());
-    formData.append('description', document.getElementById('edit-description').value.trim());
-
-    const bannerFile = document.getElementById('edit-banner').files[0];
-    if (bannerFile) {
-      formData.append('banner', bannerFile);
-    }
-
-    try {
-      const data = await safeFetchJson(`${API_URL}/events/${eventId}`, {
-        method: 'PUT',
-        body: formData
-      });
-
-      resultNode.classList.add('success');
-      resultNode.textContent = '✅ Evento atualizado com sucesso!';
-      setTimeout(() => {
-        closeEditModal();
-      }, 1000);
-
-      await loadEvents();
-      await loadAuditLogs();
-    } catch (error) {
-      resultNode.classList.add('error');
-      resultNode.textContent = `❌ ${error.message}`;
-    }
-  });
-}
-
-// -------------------------------------------------------------------
-// 5. CRUD: DELETE (Excluir Evento com log no DynamoDB)
-// -------------------------------------------------------------------
-window.deleteEvent = async function (eventId) {
-  const event = currentEvents.find((e) => e.id === eventId);
-  const name = event ? `${event.teamHome} x ${event.teamAway}` : eventId;
-
-  if (!confirm(`Deseja realmente excluir o jogo "${name}"? Essa ação será registrada na auditoria do DynamoDB.`)) {
-    return;
-  }
-
-  try {
-    const data = await safeFetchJson(`${API_URL}/events/${eventId}`, {
-      method: 'DELETE'
-    });
-
-    alert('Jogo excluído com sucesso!');
-    await loadEvents();
-    await loadAuditLogs();
-  } catch (error) {
-    alert(`Erro ao excluir: ${error.message}`);
-  }
-};
-
-// -------------------------------------------------------------------
-// 6. CHECKOUT / COMPRA DE INGRESSOS (Transação Atômica no RDS)
-// -------------------------------------------------------------------
-function updateCheckoutPreview() {
-  const select = document.getElementById('event-select');
-  const quantityInput = document.getElementById('quantity');
-  const totalPreview = document.getElementById('checkout-total-preview');
-  if (!select || !quantityInput || !totalPreview) return;
-
-  const selectedOpt = select.options[select.selectedIndex];
-  if (!selectedOpt || !selectedOpt.dataset.price) {
-    totalPreview.textContent = 'R$ 0,00';
-    return;
-  }
-
-  const price = Number(selectedOpt.dataset.price);
-  const qty = Number(quantityInput.value) || 0;
-  totalPreview.textContent = `R$ ${(price * qty).toFixed(2)}`;
-}
-
-document.getElementById('event-select')?.addEventListener('change', updateCheckoutPreview);
-document.getElementById('quantity')?.addEventListener('input', updateCheckoutPreview);
-
-window.selectEventForBuy = function (eventId) {
-  const select = document.getElementById('event-select');
-  if (select) {
-    select.value = eventId;
-    updateCheckoutPreview();
-    window.location.hash = '#checkout';
-  }
-};
-
-const checkoutForm = document.getElementById('checkout-form');
-if (checkoutForm) {
-  checkoutForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const resultNode = document.getElementById('order-result');
-    resultNode.className = 'result-message';
-    resultNode.textContent = 'Processando compra com controle atômico no RDS...';
-
-    const payload = {
-      eventId: document.getElementById('event-select').value,
-      quantity: Number(document.getElementById('quantity').value),
-      customerName: document.getElementById('customer-name').value.trim(),
-      customerEmail: document.getElementById('customer-email').value.trim()
-    };
-
-    try {
-      const data = await safeFetchJson(`${API_URL}/orders`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      resultNode.classList.add('success');
-      resultNode.textContent = `🎉 ${data.message} Pedido #${data.order.id} confirmado no valor de R$ ${data.order.total.toFixed(2)}. Ingressos atualizados no RDS e no cache Redis!`;
-      checkoutForm.reset();
-      updateCheckoutPreview();
-
-      await loadEvents();
-      await loadAuditLogs();
-    } catch (error) {
-      resultNode.classList.add('error');
-      resultNode.textContent = `❌ ${error.message}`;
-    }
-  });
-}
-
-// -------------------------------------------------------------------
-// 7. TESTE DE CARGA DE CPU (Parte 2 - Auto Scaling)
-// -------------------------------------------------------------------
-const btnStartStress = document.getElementById('btn-start-stress');
-if (btnStartStress) {
-  btnStartStress.addEventListener('click', async () => {
-    const duration = document.getElementById('stress-duration').value;
-    const stressStatus = document.getElementById('stress-status');
-    const stressMessage = document.getElementById('stress-message');
-
-    stressStatus.style.display = 'flex';
-    btnStartStress.disabled = true;
-    const seconds = Math.round(Number(duration) / 1000);
-    stressMessage.textContent = `Gerando 100% de carga de CPU por ${seconds}s para demonstrar o Auto Scaling no CloudWatch...`;
-
-    try {
-      const data = await safeFetchJson(`${API_URL}/stress?duration=${duration}`);
-      stressMessage.textContent = `✅ Carga finalizada na instância ${data.instance}. Verifique o gráfico de CPU no CloudWatch!`;
-      setTimeout(() => {
-        stressStatus.style.display = 'none';
-        btnStartStress.disabled = false;
-      }, 5000);
-    } catch (error) {
-      stressMessage.textContent = `Erro ao disparar estresse: ${error.message}`;
-      btnStartStress.disabled = false;
-    }
-  });
-}
-
-// -------------------------------------------------------------------
-// 8. LOGS DE AUDITORIA NoSQL (DynamoDB)
-// -------------------------------------------------------------------
-async function loadAuditLogs() {
-  const tbody = document.getElementById('audit-list');
-  if (!tbody) return;
-
-  try {
-    const logs = await safeFetchJson(`${API_URL}/audit-logs`);
-
-    if (!Array.isArray(logs) || logs.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;">Nenhum log registrado ainda.</td></tr>';
-      return;
-    }
-
-    tbody.innerHTML = logs.slice(0, 20).map((log) => {
-      let payloadPreview = '';
-      try {
-        const parsed = typeof log.payload === 'string' ? JSON.parse(log.payload) : log.payload;
-        payloadPreview = JSON.stringify(parsed, null, 1);
-      } catch (e) {
-        payloadPreview = String(log.payload || '');
-      }
-
-      const actionClass = log.action === 'CREATE' ? 'badge-create' :
-                          log.action === 'DELETE' ? 'badge-delete' :
-                          log.action === 'UPDATE' ? 'badge-update' :
-                          log.action === 'READ' ? 'badge-read' : 'badge-worker';
-
-      return `
-        <tr>
-          <td><small>${new Date(log.timestamp).toLocaleTimeString('pt-BR')} <br/><span class="date-muted">${new Date(log.timestamp).toLocaleDateString('pt-BR')}</span></small></td>
-          <td><span class="badge-action ${actionClass}">${log.action}</span></td>
-          <td><strong>${log.resource || 'item'}</strong></td>
-          <td><pre class="log-payload">${payloadPreview}</pre></td>
-        </tr>
-      `;
-    }).join('');
-  } catch (error) {
-    tbody.innerHTML = `<tr ><td colspan="4" class="error-text">${error.message}</td></tr>`;
-  }
-}
-
-// -------------------------------------------------------------------
-// 9. AUTENTICAÇÃO SIMPLES
-// -------------------------------------------------------------------
-async function handleAuth(event, type) {
-  event.preventDefault();
-  const authResult = document.getElementById('auth-result');
-  authResult.className = 'auth-result';
-
-  const payload = {
-    email: document.getElementById(type === 'register' ? 'register-email' : 'login-email').value,
-    password: document.getElementById(type === 'register' ? 'register-password' : 'login-password').value
-  };
-
-  if (type === 'register') {
-    payload.name = document.getElementById('register-name').value;
-  }
-
-  try {
-    const data = await safeFetchJson(`${API_URL}/auth/${type}`, {
+    const res = await fetch(`${API}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+      body: JSON.stringify({ email, password })
     });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.message || 'Falha ao autenticar.');
 
-    setToken(data.token);
-    authResult.classList.add('success');
-    authResult.textContent = `✅ ${data.message}`;
-    updateUserStatus();
+    saveUser(body.user, body.token);
+    const cb = $('auth-modal')._onSuccess;
+    closeAuthModal();
 
-    if (type === 'register') document.getElementById('register-form').reset();
-    else document.getElementById('login-form').reset();
+    if (cb) {
+      cb();
+    } else if (state.event) {
+      renderStep3();
+      showStep(3);
+    }
   } catch (error) {
-    authResult.classList.add('error');
-    authResult.textContent = `❌ ${error.message}`;
+    err.textContent = error.message;
+    err.classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Entrar e Continuar →';
+  }
+});
+
+// Submit Cadastro
+$('form-register').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const name = $('reg-name').value.trim();
+  const email = $('reg-email').value.trim();
+  const password = $('reg-password').value;
+  const btn = $('btn-submit-reg');
+  const err = $('register-error');
+
+  btn.disabled = true;
+  btn.textContent = 'Criando conta...';
+  err.classList.add('hidden');
+
+  try {
+    const res = await fetch(`${API}/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, email, password })
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.message || 'Falha ao cadastrar.');
+
+    saveUser(body.user, body.token);
+    const cb = $('auth-modal')._onSuccess;
+    closeAuthModal();
+
+    if (cb) {
+      cb();
+    } else if (state.event) {
+      renderStep3();
+      showStep(3);
+    }
+  } catch (error) {
+    err.textContent = error.message;
+    err.classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Cadastrar e Continuar →';
+  }
+});
+
+/* ---------- Renderização dos Jogos no Menu Principal ---------- */
+function renderGames() {
+  let list = state.events;
+  if (state.filter !== 'all') {
+    list = list.filter((e) => stadiumKeyOf(e) === state.filter);
+  }
+
+  const container = $('game-list');
+  if (!list.length) {
+    container.innerHTML = `<div class="empty" style="grid-column:1/-1">Nenhum jogo encontrado para os critérios selecionados.</div>`;
+    return;
+  }
+
+  container.innerHTML = list.map((ev) => {
+    const img = ev.thumbnailUrl || ev.bannerUrl;
+    const stadiumName = ev.stadium || 'Estádio';
+    const dateFormatted = formatGameDate(ev.date);
+    const timeFormatted = formatGameTime(ev.date);
+
+    return `
+      <article class="game-card">
+        <div class="game-banner">
+          ${img ? `<img src="${esc(img)}" alt="${esc(ev.teamHome)} x ${esc(ev.teamAway)}" onerror="this.remove()" />` : ''}
+          <div class="vs">
+            <span class="team-name">${esc(ev.teamHome)}</span>
+            <span class="vs-symbol">×</span>
+            <span class="team-name">${esc(ev.teamAway)}</span>
+          </div>
+        </div>
+        <div class="game-body">
+          <h3 class="game-title">${esc(ev.teamHome)} <span style="opacity:.6">×</span> ${esc(ev.teamAway)}</h3>
+          
+          <!-- Informação do estádio abaixo do confronto -->
+          <div class="game-meta stadium-info">
+            <span class="meta-icon">🏟️</span>
+            <span class="stadium-name">${esc(stadiumName)}</span>
+          </div>
+
+          <!-- Horário e Data do jogo -->
+          <div class="game-datetime-row">
+            <div class="datetime-item date-pill">
+              <span class="meta-icon">📅</span>
+              <span>${esc(dateFormatted)}</span>
+            </div>
+            <div class="datetime-item time-pill">
+              <span class="meta-icon">⏰</span>
+              <strong>${esc(timeFormatted)}</strong>
+            </div>
+          </div>
+
+          <!-- Categoria e Descrição -->
+          <div class="game-meta category-info">
+            <span class="meta-icon">🎟️</span>
+            <span>${esc(ev.category)}${ev.description ? ' · ' + esc(ev.description) : ''}</span>
+          </div>
+
+          <div class="game-foot">
+            <div class="price">
+              <small>a partir de</small>
+              ${money(ev.price)}
+            </div>
+            ${stockBadge(ev)}
+          </div>
+
+          <button class="btn btn-primary btn-select-game" data-event="${esc(ev.id)}" ${ev.available <= 0 ? 'disabled' : ''}>
+            ${ev.available <= 0 ? 'Esgotado' : 'Comprar Ingresso →'}
+          </button>
+        </div>
+      </article>
+    `;
+  }).join('');
+
+  document.querySelectorAll('[data-event]').forEach((btn) =>
+    btn.addEventListener('click', () => {
+      const selected = state.events.find((e) => e.id === btn.dataset.event);
+      if (!selected) return;
+      state.event = selected;
+      state.quantity = 1;
+      renderStep2();
+      showStep(2);
+    })
+  );
+}
+
+/* ---------- Filtros de Estádio ---------- */
+document.querySelectorAll('#stadium-filters .filter-chip').forEach((chip) => {
+  chip.addEventListener('click', () => {
+    document.querySelectorAll('#stadium-filters .filter-chip').forEach((c) => c.classList.remove('active'));
+    chip.classList.add('active');
+    state.filter = chip.dataset.filter;
+    renderGames();
+  });
+});
+
+/* ---------- Resumo do Pedido ---------- */
+function summaryHtml(withBuyer) {
+  const ev = state.event;
+  if (!ev) return '';
+  const stadiumName = ev.stadium || 'Estádio';
+  const rows = [
+    ['Jogo', `${ev.teamHome} x ${ev.teamAway}`],
+    ['Estádio', stadiumName],
+    ['Data', formatGameDate(ev.date)],
+    ['Horário', formatGameTime(ev.date)],
+    ['Setor', ev.category],
+    ['Preço unitário', money(ev.price)],
+    ['Quantidade', state.quantity]
+  ];
+  if (withBuyer && state.user) {
+    rows.push(['Titular', state.user.name], ['E-mail', state.user.email]);
+  }
+  return `
+    <h3>Resumo do Pedido</h3>
+    ${rows.map(([k, v]) => `<div class="row"><span>${esc(k)}</span><span>${esc(v)}</span></div>`).join('')}
+    <div class="row total"><span>Total</span><span>${money(ev.price * state.quantity)}</span></div>
+  `;
+}
+
+/* ---------- Etapa 2: Apenas Quantidade de Ingressos ---------- */
+function renderStep2() {
+  const ev = state.event;
+  if (!ev) return;
+  const max = Math.min(MAX_PER_ORDER, ev.available);
+  state.quantity = Math.min(state.quantity, max) || 1;
+
+  const preview = $('selected-game-preview');
+  if (preview) {
+    preview.innerHTML = `
+      <div class="preview-content">
+        <span class="preview-tag">Jogo Selecionado</span>
+        <h3>${esc(ev.teamHome)} × ${esc(ev.teamAway)}</h3>
+        <p>🏟️ <strong>${esc(ev.stadium)}</strong> · 📅 ${esc(formatGameDate(ev.date))} às ⏰ <strong>${esc(formatGameTime(ev.date))}</strong></p>
+      </div>
+    `;
+  }
+
+  $('qty-value').textContent = state.quantity;
+  $('qty-hint').textContent = `Máximo de ${max} ingresso(s) por compra.`;
+  $('summary-2').innerHTML = summaryHtml(false);
+  $('step2-error').classList.add('hidden');
+
+  // Indicador de autenticação na etapa 2
+  const authInd = $('step2-auth-indicator');
+  if (state.user) {
+    authInd.innerHTML = `
+      <div class="auth-box-status logged">
+        <span class="auth-icon-check">✓</span>
+        <div>
+          <strong>Identificado como:</strong> ${esc(state.user.name)} (${esc(state.user.email)})
+          <button type="button" class="btn-link" id="btn-step2-logout">Trocar de conta</button>
+        </div>
+      </div>
+    `;
+    $('btn-step2-logout').addEventListener('click', logoutUser);
+  } else {
+    authInd.innerHTML = `
+      <div class="auth-box-status not-logged">
+        <span class="auth-icon-lock">🔒</span>
+        <div>
+          Ao clicar no botão de comprar, revisaremos se você já está conectado ou abriremos o login/cadastro para vincular seus ingressos.
+        </div>
+      </div>
+    `;
   }
 }
 
-document.getElementById('register-form')?.addEventListener('submit', (e) => handleAuth(e, 'register'));
-document.getElementById('login-form')?.addEventListener('submit', (e) => handleAuth(e, 'login'));
-document.getElementById('btn-refresh-events')?.addEventListener('click', loadEvents);
-document.getElementById('btn-refresh-audit')?.addEventListener('click', loadAuditLogs);
-document.getElementById('btn-refresh-health')?.addEventListener('click', loadHealthStatus);
+function changeQty(delta) {
+  if (!state.event) return;
+  const max = Math.min(MAX_PER_ORDER, state.event.available);
+  state.quantity = Math.max(1, Math.min(max, state.quantity + delta));
+  $('qty-value').textContent = state.quantity;
+  $('summary-2').innerHTML = summaryHtml(false);
+}
 
-// Inicialização
-updateUserStatus();
-loadHealthStatus();
-loadEvents();
-loadAuditLogs();
-setInterval(loadHealthStatus, 15000);
+$('qty-minus').addEventListener('click', () => changeQty(-1));
+$('qty-plus').addEventListener('click', () => changeQty(1));
+
+/* ---------- Ação do botão Comprar/Revisar (Revisa se está logado!) ---------- */
+$('to-review').addEventListener('click', () => {
+  // Revisa se a pessoa está logada
+  if (!state.user) {
+    // Não está logada: abre modal para se autenticar
+    openAuthModal(() => {
+      renderStep3();
+      showStep(3);
+    });
+    return;
+  }
+
+  // Já está logada: avança direto para a revisão do pedido
+  renderStep3();
+  showStep(3);
+});
+
+/* ---------- Etapa 3: Revisão do Pedido ---------- */
+function renderStep3() {
+  const userInfoBox = $('logged-user-info');
+  if (userInfoBox && state.user) {
+    userInfoBox.innerHTML = `
+      <div class="logged-card">
+        <div class="logged-avatar">👤</div>
+        <div class="logged-details">
+          <small>Titular do Ingresso</small>
+          <h4>${esc(state.user.name)}</h4>
+          <p>${esc(state.user.email)}</p>
+        </div>
+        <button type="button" class="btn-link" id="btn-step3-switch">Trocar conta</button>
+      </div>
+    `;
+    $('btn-step3-switch').addEventListener('click', () => {
+      openAuthModal(() => {
+        renderStep3();
+      });
+    });
+  }
+
+  $('summary-3').innerHTML = summaryHtml(true);
+  $('step3-error').classList.add('hidden');
+}
+
+/* ---------- Confirmar Compra (Etapa 3 -> 4) ---------- */
+$('confirm-order').addEventListener('click', async () => {
+  if (!state.user) {
+    openAuthModal(() => {
+      renderStep3();
+    });
+    return;
+  }
+
+  const btn = $('confirm-order');
+  const err = $('step3-error');
+  btn.disabled = true;
+  btn.textContent = 'Processando pedido...';
+  err.classList.add('hidden');
+
+  try {
+    const res = await fetch(`${API}/orders`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        eventId: state.event.id,
+        quantity: state.quantity,
+        customerName: state.user.name,
+        customerEmail: state.user.email
+      })
+    });
+
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.message || 'Não foi possível concluir a compra.');
+
+    state.order = body.order;
+    renderTicket();
+    showStep(4);
+    loadEvents().then(renderGames).catch(() => {});
+  } catch (e) {
+    err.textContent = e.message;
+    err.classList.remove('hidden');
+    loadEvents().then(() => {
+      const fresh = state.events.find((x) => x.id === state.event?.id);
+      if (fresh) state.event = fresh;
+    }).catch(() => {});
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Confirmar compra ✓';
+  }
+});
+
+/* ---------- Etapa 4: Ticket do Ingresso ---------- */
+function renderTicket() {
+  const ev = state.event;
+  const o = state.order;
+  const stadiumName = ev.stadium || 'Estádio';
+
+  $('ticket').innerHTML = `
+    <div class="ticket-main">
+      <div class="ticket-header-tag">INGRESSO OFICIAL DIGITAL</div>
+      <h3 class="ticket-teams">${esc(ev.teamHome)} × ${esc(ev.teamAway)}</h3>
+      <p class="ticket-stadium-line">🏟️ <strong>${esc(stadiumName)}</strong></p>
+      <p class="ticket-time-line">📅 ${esc(formatGameDate(ev.date))} · ⏰ <strong>${esc(formatGameTime(ev.date))}</strong></p>
+      <p class="ticket-sector-line">🎟️ ${esc(o.quantity)} × ${esc(ev.category)}</p>
+      <p class="ticket-owner-line">👤 Titular: <strong>${esc(o.customerName)}</strong> (${esc(o.customerEmail)})</p>
+      <p class="ticket-total-line">Total Pago: ${money(o.total)}</p>
+    </div>
+    <div class="ticket-stub">
+      <small>CÓDIGO LOCALIZADOR</small>
+      <div class="code">${esc(o.id)}</div>
+      <small>${esc(o.quantity)} ingresso(s)</small>
+      <div class="ticket-qr-placeholder">⚽ QR CODE</div>
+    </div>
+  `;
+}
+
+/* ---------- Novo Pedido / Voltar ao Início ---------- */
+$('new-purchase').addEventListener('click', () => {
+  state.event = null;
+  state.quantity = 1;
+  state.order = null;
+  renderGames();
+  showStep(1);
+});
+
+/* ---------- Inicialização ---------- */
+(async function init() {
+  loadSavedUser();
+  renderUserNav();
+  try {
+    await loadEvents();
+  } catch (e) {
+    $('game-list').innerHTML = `<div class="alert error">${esc(e.message)}</div>`;
+  }
+  renderGames();
+  showStep(1);
+  window.scrollTo(0, 0);
+})();

@@ -3,375 +3,171 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Stadium Tickets - Loja de Ingressos AWS</title>
+    <title>Ingressos Futebol | Jogos Oficiais</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <!-- Topbar -->
     <header class="topbar">
       <div class="container topbar-content">
-        <div class="brand">
+        <a class="brand" href="/">
           <span class="brand-icon">⚽</span>
-          <div>
-            <strong>Stadium Tickets</strong>
-            <span class="badge-nuvem">AWS Cloud Architecture</span>
-          </div>
-        </div>
-        <nav>
-          <a href="#status-aws">Serviços AWS</a>
-          <a href="#jogos">Jogos (CRUD)</a>
-          <a href="#cadastro-jogo">Novo Jogo</a>
-          <a href="#checkout">Comprar</a>
-          <a href="#auditoria">Auditoria (DynamoDB)</a>
-          <a href="#teste-carga" class="nav-stress">⚡ Teste de Carga</a>
+          <span>Ingressos Futebol<small>Castelão · Presidente Vargas</small></span>
+        </a>
+        <nav class="topbar-nav">
+          <a href="#comprar">Jogos disponíveis</a>
+          <div id="user-nav" class="user-nav"></div>
         </nav>
-        <div id="user-status" class="user-status">Faça login para comprar</div>
       </div>
     </header>
 
-    <main class="container">
-      <!-- Painel de Status dos 6 Serviços AWS -->
-      <section id="status-aws" class="aws-status-panel">
-        <div class="panel-header">
-          <div>
-            <h2>Painel de Infraestrutura e Serviços AWS</h2>
-            <p class="panel-subtitle">Monitoramento em tempo real dos 6 componentes da arquitetura em nuvem</p>
-          </div>
-          <div class="header-actions">
-            <span id="instance-badge" class="instance-badge">Host: Detectando...</span>
-            <button id="btn-refresh-health" class="btn btn-sm btn-outline">🔄 Atualizar Status</button>
-          </div>
-        </div>
-
-        <div class="aws-grid">
-          <div class="aws-card" id="card-ec2">
-            <div class="card-top">
-              <span class="card-icon">💻</span>
-              <span class="status-indicator" id="status-ec2">Ativo</span>
-            </div>
-            <h4>EC2 &amp; Auto Scaling</h4>
-            <small>Instância da aplicação sob Load Balancer (ALB)</small>
-          </div>
-
-          <div class="aws-card" id="card-rds">
-            <div class="card-top">
-              <span class="card-icon">🐘</span>
-              <span class="status-indicator" id="status-rds">Verificando...</span>
-            </div>
-            <h4>Amazon RDS</h4>
-            <small>PostgreSQL com transações atômicas de concorrência</small>
-          </div>
-
-          <div class="aws-card" id="card-elasticache">
-            <div class="card-top">
-              <span class="card-icon">⚡</span>
-              <span class="status-indicator" id="status-elasticache">Verificando...</span>
-            </div>
-            <h4>ElastiCache</h4>
-            <small>Redis para consultas de alta frequência e cache</small>
-          </div>
-
-          <div class="aws-card" id="card-s3">
-            <div class="card-top">
-              <span class="card-icon">🪣</span>
-              <span class="status-indicator" id="status-s3">Verificando...</span>
-            </div>
-            <h4>Amazon S3</h4>
-            <small>Armazenamento de banners e thumbnails dos jogos</small>
-          </div>
-
-          <div class="aws-card" id="card-dynamodb">
-            <div class="card-top">
-              <span class="card-icon">📝</span>
-              <span class="status-indicator" id="status-dynamodb">Verificando...</span>
-            </div>
-            <h4>DynamoDB</h4>
-            <small>Auditoria NoSQL obrigatória para todas as ações do CRUD</small>
-          </div>
-
-          <div class="aws-card" id="card-sqs">
-            <div class="card-top">
-              <span class="card-icon">📬</span>
-              <span class="status-indicator" id="status-sqs">Verificando...</span>
-            </div>
-            <h4>SNS / SQS</h4>
-            <small>Fila para Worker desacoplado (Rescaling com Sharp)</small>
-          </div>
-        </div>
-      </section>
-
-      <!-- Painel Especial de Teste de Carga de CPU (Parte 2 - Auto Scaling) -->
-      <section id="teste-carga" class="stress-panel">
-        <div class="stress-header">
-          <div>
-            <h3>⚡ Teste de Elasticidade &amp; Auto Scaling (Parte 2)</h3>
-            <p>
-              Eleve o uso de CPU acima de <strong>70% por mais de 1 minuto</strong> para disparar o alarme do CloudWatch e acionar o <strong>Scale-Out</strong> horizontal de novas instâncias EC2.
-            </p>
-          </div>
-          <div class="stress-controls">
-            <label for="stress-duration">Duração do teste:</label>
-            <select id="stress-duration">
-              <option value="15000">15 segundos (Teste rápido)</option>
-              <option value="45000">45 segundos (Prévia)</option>
-              <option value="75000" selected>75 segundos (> 1 min p/ Alarme)</option>
-              <option value="120000">120 segundos (2 minutos contínuos)</option>
-            </select>
-            <button id="btn-start-stress" class="btn btn-warning">🔥 Iniciar Carga de CPU</button>
-          </div>
-        </div>
-        <div id="stress-status" class="stress-status-bar" style="display: none;">
-          <span class="spinner"></span>
-          <span id="stress-message">Executando carga pesada de CPU na instância...</span>
-        </div>
-      </section>
-
-      <!-- Vitrine de Jogos com CRUD Completo -->
-      <section id="jogos" class="events">
-        <div class="section-title-row">
-          <div>
-            <h2>Jogos Disponíveis no Estádio</h2>
-            <p class="section-desc">Consultas cacheadas no <strong>ElastiCache Redis</strong> com dados sincronizados no <strong>RDS</strong>.</p>
-          </div>
-          <div class="section-btn-group">
-            <button id="btn-refresh-events" class="btn btn-sm btn-outline">🔄 Atualizar Jogos</button>
-            <a href="#cadastro-jogo" class="btn btn-sm btn-primary">➕ Novo Jogo</a>
-          </div>
-        </div>
-
-        <div id="event-list" class="event-list">
-          <div class="loading-placeholder">Carregando jogos do estádio...</div>
-        </div>
-      </section>
-
-      <!-- Modal de Edição de Evento (CRUD UPDATE) -->
-      <div id="edit-modal" class="modal-backdrop" style="display: none;">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h3>✏️ Editar Informações do Jogo</h3>
-            <button id="btn-close-modal" class="modal-close">&times;</button>
-          </div>
-          <form id="event-edit-form" enctype="multipart/form-data">
-            <input type="hidden" id="edit-event-id" />
-            <div class="field-grid">
-              <label>
-                Time Mandante
-                <input id="edit-team-home" type="text" required />
-              </label>
-
-              <label>
-                Time Visitante
-                <input id="edit-team-away" type="text" required />
-              </label>
-
-              <label>
-                Estádio
-                <input id="edit-stadium" type="text" required />
-              </label>
-
-              <label>
-                Data e Horário
-                <input id="edit-date" type="datetime-local" required />
-              </label>
-
-              <label>
-                Preço do Ingresso (R$)
-                <input id="edit-price" type="number" step="0.50" min="10" required />
-              </label>
-
-              <label>
-                Ingressos Disponíveis
-                <input id="edit-available" type="number" min="0" required />
-              </label>
-
-              <label>
-                Setor / Categoria
-                <input id="edit-category" type="text" required />
-              </label>
-
-              <label>
-                Novo Banner (Opcional - reprocessa no SQS)
-                <input id="edit-banner" type="file" accept="image/*" />
-              </label>
-            </div>
-
-            <label>
-              Descrição
-              <textarea id="edit-description" rows="2"></textarea>
-            </label>
-
-            <div class="modal-footer">
-              <button type="button" id="btn-cancel-edit" class="btn btn-secondary">Cancelar</button>
-              <button type="submit" class="btn btn-primary">Salvar Alterações</button>
-            </div>
-          </form>
-          <div id="edit-result" class="result-message"></div>
-        </div>
+    <section class="hero">
+      <div class="container hero-content">
+        <div class="hero-badge">⚽ Ingressos Oficiais · Temporada 2026</div>
+        <h1>Jogos do Futebol Cearense</h1>
+        <p>Selecione a partida abaixo para ver detalhes, setores e garantir seus ingressos com confirmação em tempo real.</p>
       </div>
+    </section>
 
-      <!-- Cadastro de Novo Evento / Banner (Upload S3 + SQS - CRUD CREATE) -->
-      <section id="cadastro-jogo" class="create-event-panel">
-        <div class="section-title-row">
+    <main class="container checkout" id="comprar">
+      <ol class="stepper" id="stepper">
+        <li data-step="1" class="active"><span class="dot">1</span> Jogos</li>
+        <li data-step="2"><span class="dot">2</span> Quantidade</li>
+        <li data-step="3"><span class="dot">3</span> Revisão</li>
+        <li data-step="4"><span class="dot">4</span> Confirmação</li>
+      </ol>
+
+      <!-- Etapa 1: Menu Principal com Jogos Disponíveis -->
+      <section class="panel step" id="step-1">
+        <div class="games-header">
           <div>
-            <h2>Cadastrar Novo Jogo (com Banner Oficial)</h2>
-            <p class="info-text">
-              O upload do banner será enviado para o <strong>Amazon S3</strong> e a tarefa de redimensionamento (rescaling) será enfileirada no <strong>SQS</strong> para processamento desacoplado pelo <strong>Worker</strong>.
-            </p>
+            <h2>Jogos Disponíveis</h2>
+            <p class="sub">Selecione o confronto para comprar ingressos.</p>
+          </div>
+          <div class="stadium-filters" id="stadium-filters">
+            <button class="filter-chip active" data-filter="all">Todos os Estádios</button>
+            <button class="filter-chip" data-filter="castelao">Arena Castelão</button>
+            <button class="filter-chip" data-filter="vargas">Presidente Vargas</button>
           </div>
         </div>
-
-        <form id="event-create-form" enctype="multipart/form-data">
-          <div class="field-grid">
-            <label>
-              Time Mandante
-              <input id="create-team-home" type="text" placeholder="Ex: Fortaleza EC" required />
-            </label>
-
-            <label>
-              Time Visitante
-              <input id="create-team-away" type="text" placeholder="Ex: Ceará SC" required />
-            </label>
-
-            <label>
-              Estádio
-              <input id="create-stadium" type="text" placeholder="Ex: Arena Castelão" required />
-            </label>
-
-            <label>
-              Data e Horário
-              <input id="create-date" type="datetime-local" required />
-            </label>
-
-            <label>
-              Preço do Ingresso (R$)
-              <input id="create-price" type="number" step="0.50" min="10" value="80.00" required />
-            </label>
-
-            <label>
-              Carga de Ingressos (Estoque)
-              <input id="create-available" type="number" min="1" max="100000" value="500" required />
-            </label>
-
-            <label>
-              Setor / Categoria
-              <input id="create-category" type="text" value="Cadeira Superior" required />
-            </label>
-
-            <label>
-              Banner do Jogo (Arquivo Binário)
-              <input id="create-banner" type="file" accept="image/*" />
-            </label>
-          </div>
-
-          <label>
-            Descrição do Jogo
-            <textarea id="create-description" rows="2" placeholder="Detalhes da partida, portões de acesso, etc."></textarea>
-          </label>
-
-          <button type="submit" class="btn btn-primary">Cadastrar Evento</button>
-        </form>
-
-        <div id="create-result" class="result-message"></div>
+        <div class="games" id="game-list"></div>
       </section>
 
-      <!-- Checkout / Compra de Ingressos (Controle de Concorrência no RDS) -->
-      <section id="checkout" class="checkout">
-        <div class="section-title-row">
+      <!-- Etapa 2: Apenas Quantidade de Ingressos (sem campos manuais de nome/email) -->
+      <section class="panel step hidden" id="step-2">
+        <div id="selected-game-preview" class="selected-game-banner"></div>
+        <h2>Quantidade de ingressos</h2>
+        <p class="sub">Escolha quantos ingressos você deseja para esta partida.</p>
+        <div class="two-col">
           <div>
-            <h2>Comprar Ingressos</h2>
-            <p class="section-desc">Garante controle de concorrência no <strong>RDS</strong> para que dois torcedores não comprem o mesmo assento/vaga simultaneamente.</p>
+            <div class="field">
+              <label>Quantidade de ingressos</label>
+              <div class="qty">
+                <button type="button" id="qty-minus" aria-label="Diminuir">−</button>
+                <span id="qty-value">1</span>
+                <button type="button" id="qty-plus" aria-label="Aumentar">+</button>
+              </div>
+              <small id="qty-hint" style="color:var(--muted)"></small>
+            </div>
+
+            <!-- Indicador do estado de autenticação -->
+            <div class="auth-status-card" id="step2-auth-indicator"></div>
+
+            <div id="step2-error" class="alert error hidden"></div>
           </div>
+          <aside class="summary" id="summary-2"></aside>
         </div>
-
-        <form id="checkout-form">
-          <div class="field-grid">
-            <label>
-              Selecione o Jogo
-              <select id="event-select" required></select>
-            </label>
-
-            <label>
-              Quantidade de Ingressos
-              <input id="quantity" type="number" min="1" max="10" value="2" required />
-            </label>
-
-            <label>
-              Nome do Torcedor
-              <input id="customer-name" type="text" placeholder="Seu nome" required />
-            </label>
-
-            <label>
-              E-mail para Confirmação
-              <input id="customer-email" type="email" placeholder="seu@email.com" required />
-            </label>
-          </div>
-
-          <div class="checkout-summary">
-            <span>Valor estimado: <strong id="checkout-total-preview">R$ 0,00</strong></span>
-          </div>
-
-          <button type="submit" class="btn btn-success btn-lg">Confirmar Compra</button>
-        </form>
-
-        <div id="order-result" class="result-message"></div>
+        <div class="actions">
+          <button class="btn btn-ghost" data-back="1">← Voltar aos jogos</button>
+          <button class="btn btn-primary" id="to-review">Continuar para compra →</button>
+        </div>
       </section>
 
-      <!-- Autenticação Simples -->
-      <section class="auth-panel">
-        <h2>Área do Torcedor</h2>
-        <div class="auth-grid">
-          <form id="register-form" class="auth-form">
-            <h3>Criar Conta</h3>
-            <input id="register-name" type="text" placeholder="Seu nome completo" required />
-            <input id="register-email" type="email" placeholder="E-mail" required />
-            <input id="register-password" type="password" placeholder="Senha" required />
-            <button type="submit" class="btn btn-secondary">Cadastrar</button>
-          </form>
-
-          <form id="login-form" class="auth-form">
-            <h3>Entrar</h3>
-            <input id="login-email" type="email" placeholder="E-mail" required />
-            <input id="login-password" type="password" placeholder="Senha" required />
-            <button type="submit" class="btn btn-secondary">Entrar</button>
-          </form>
+      <!-- Etapa 3: Revisão (Verifica login do usuário e resumo) -->
+      <section class="panel step hidden" id="step-3">
+        <h2>Revise seu pedido</h2>
+        <p class="sub">Confira todos os dados antes de confirmar a compra.</p>
+        <div class="two-col">
+          <div>
+            <div class="user-logged-box" id="logged-user-info"></div>
+            <div class="alert info">Ao confirmar, seus ingressos são reservados com controle atômico e vinculados à sua conta.</div>
+            <div id="step3-error" class="alert error hidden"></div>
+          </div>
+          <aside class="summary" id="summary-3"></aside>
         </div>
-        <div id="auth-result" class="auth-result"></div>
+        <div class="actions">
+          <button class="btn btn-ghost" data-back="2">← Alterar quantidade</button>
+          <button class="btn btn-primary" id="confirm-order">Confirmar compra ✓</button>
+        </div>
       </section>
 
-      <!-- Auditoria NoSQL DynamoDB -->
-      <section id="auditoria" class="audit-panel">
-        <div class="section-title-row">
-          <div>
-            <h2>Logs de Auditoria NoSQL (Amazon DynamoDB)</h2>
-            <p class="info-text">
-              Cada ação de CRUD (criação, leitura, atualização, exclusão, compra e worker) é registrada com tipo da ação, dados manipulados e timestamp.
-            </p>
-          </div>
-          <button id="btn-refresh-audit" class="btn btn-sm btn-outline">🔄 Atualizar Logs</button>
+      <!-- Etapa 4: Confirmação -->
+      <section class="panel step hidden" id="step-4">
+        <div style="text-align:center">
+          <span class="success-badge">✓ Compra confirmada</span>
+          <h2>Seu ingresso está garantido!</h2>
+          <p class="sub">Apresente o código do pedido na entrada do estádio.</p>
         </div>
-
-        <div class="audit-table-wrapper">
-          <table class="audit-table">
-            <thead>
-              <tr>
-                <th style="width: 140px;">Data / Hora</th>
-                <th style="width: 110px;">Ação</th>
-                <th style="width: 110px;">Recurso</th>
-                <th>Dados Manipulados (JSON)</th>
-              </tr>
-            </thead>
-            <tbody id="audit-list">
-              <tr><td colspan="4" style="text-align: center;">Carregando auditoria...</td></tr>
-            </tbody>
-          </table>
+        <div class="ticket" id="ticket"></div>
+        <div class="actions" style="justify-content:center">
+          <button class="btn btn-ghost" onclick="window.print()">Imprimir</button>
+          <button class="btn btn-primary" id="new-purchase">Comprar mais ingressos</button>
         </div>
       </section>
     </main>
 
-    <footer class="footer">
+    <!-- Modal de Identificação / Login / Cadastro -->
+    <div id="auth-modal" class="modal-backdrop hidden">
+      <div class="modal-card">
+        <button class="modal-close" id="auth-close-btn" aria-label="Fechar">✕</button>
+        <div class="modal-header">
+          <div class="modal-icon">⚽</div>
+          <h2>Identificação do Torcedor</h2>
+          <p class="sub">Faça login ou cadastre-se para continuar sua compra.</p>
+        </div>
+
+        <div class="auth-tabs">
+          <button type="button" class="auth-tab active" id="tab-login-btn">Já tenho conta</button>
+          <button type="button" class="auth-tab" id="tab-register-btn">Criar nova conta</button>
+        </div>
+
+        <!-- Formulário de Login -->
+        <form id="form-login" class="auth-form">
+          <div class="field">
+            <label for="login-email">E-mail</label>
+            <input type="email" id="login-email" placeholder="seu@email.com" required autocomplete="email" />
+          </div>
+          <div class="field">
+            <label for="login-password">Senha</label>
+            <input type="password" id="login-password" placeholder="Sua senha" required autocomplete="current-password" />
+          </div>
+          <div id="login-error" class="alert error hidden"></div>
+          <button type="submit" class="btn btn-primary btn-block" id="btn-submit-login">Entrar e Continuar →</button>
+        </form>
+
+        <!-- Formulário de Cadastro -->
+        <form id="form-register" class="auth-form hidden">
+          <div class="field">
+            <label for="reg-name">Nome completo</label>
+            <input type="text" id="reg-name" placeholder="Seu nome completo" required autocomplete="name" />
+          </div>
+          <div class="field">
+            <label for="reg-email">E-mail</label>
+            <input type="email" id="reg-email" placeholder="seu@email.com" required autocomplete="email" />
+          </div>
+          <div class="field">
+            <label for="reg-password">Senha</label>
+            <input type="password" id="reg-password" placeholder="Crie uma senha" required autocomplete="new-password" />
+          </div>
+          <div id="register-error" class="alert error hidden"></div>
+          <button type="submit" class="btn btn-primary btn-block" id="btn-submit-reg">Cadastrar e Continuar →</button>
+        </form>
+      </div>
+    </div>
+
+    <footer>
       <div class="container">
-        <p><strong>Desenvolvimento de Software para Nuvem</strong> - Universidade Federal do Ceará (UFC)</p>
-        <p><small>Professores: Dr. Paulo A. L. Rego e Dr. Fernando Antonio Mota Trinta | Trabalho Prático 1</small></p>
+        <span>© 2026 Ingressos Futebol · Trabalho de Desenvolvimento de Software para Nuvem (UFC)</span>
+        <a href="/admin.html">Área administrativa</a>
       </div>
     </footer>
 

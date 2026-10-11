@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex" />
+    <title>Administração | Ingressos Fortaleza</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="admin">
+    <header class="topbar">
+      <div class="container topbar-content">
+        <a class="brand" href="/admin"><span class="brand-icon">🛠️</span><span>Administração<small>Ingressos Fortaleza</small></span></a>
+        <nav>
+          <a href="/">Ver loja</a>
+          <a href="#" id="logout" class="hidden">Sair</a>
+        </nav>
+      </div>
+    </header>
+
+    <!-- Login -->
+    <section id="login-view" class="container">
+      <div class="login-box">
+        <h2>Acesso restrito</h2>
+        <p style="color:var(--muted)">Informe a senha de administrador para gerenciar os jogos.</p>
+        <div class="field">
+          <label for="admin-password">Senha</label>
+          <input id="admin-password" type="password" autocomplete="current-password" />
+        </div>
+        <div id="login-error" class="alert error hidden"></div>
+        <button class="btn btn-primary" id="login-btn" style="width:100%;margin-top:8px">Entrar</button>
+      </div>
+    </section>
+
+    <!-- Painel -->
+    <main id="panel-view" class="container admin-wrap hidden">
+      <div class="tabs" id="tabs">
+        <button class="tab active" data-tab="games">Jogos (CRUD)</button>
+        <button class="tab" data-tab="orders">Pedidos</button>
+        <button class="tab" data-tab="audit">Auditoria</button>
+        <button class="tab" data-tab="infra">Infraestrutura AWS</button>
+      </div>
+
+      <!-- Jogos -->
+      <section id="tab-games">
+        <div class="toolbar">
+          <h2>Jogos cadastrados</h2>
+          <button class="btn btn-primary" id="new-game">+ Novo jogo</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Jogo</th><th>Estádio</th><th>Data</th><th>Setor</th><th>Preço</th><th>Disponíveis</th><th>Banner</th><th>Ações</th></tr></thead>
+            <tbody id="games-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Pedidos -->
+      <section id="tab-orders" class="hidden">
+        <div class="toolbar"><h2>Pedidos (RDS)</h2><button class="btn btn-ghost btn-sm" id="refresh-orders">Atualizar</button></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Pedido</th><th>Jogo</th><th>Cliente</th><th>E-mail</th><th>Qtd</th><th>Total</th><th>Data</th></tr></thead>
+            <tbody id="orders-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Auditoria -->
+      <section id="tab-audit" class="hidden">
+        <div class="toolbar"><h2>Auditoria das ações (DynamoDB)</h2><button class="btn btn-ghost btn-sm" id="refresh-audit">Atualizar</button></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Horário</th><th>Ação</th><th>Recurso</th><th>Dados</th></tr></thead>
+            <tbody id="audit-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Infra -->
+      <section id="tab-infra" class="hidden">
+        <div class="toolbar"><h2>Serviços AWS</h2><button class="btn btn-ghost btn-sm" id="refresh-health">Atualizar</button></div>
+        <div class="aws-grid" id="aws-grid"></div>
+
+        <div class="toolbar"><h2>Teste de elasticidade (Parte 2)</h2></div>
+        <div class="stress-grid">
+          <div class="panel">
+            <p class="sub" style="margin-bottom:14px">Gera carga de CPU pelo Load Balancer. Com a média acima de 70% por mais de 1 minuto, o Auto Scaling cria novas instâncias (máx. 3).</p>
+            <div class="grid-2">
+              <div class="field"><label for="stress-conc">Requisições simultâneas</label><input id="stress-conc" type="number" min="1" max="30" value="8" /></div>
+              <div class="field"><label for="stress-secs">Duração total (segundos)</label><input id="stress-secs" type="number" min="10" max="1800" value="300" /></div>
+            </div>
+            <div style="display:flex;gap:10px">
+              <button class="btn btn-primary" id="stress-start">⚡ Iniciar carga</button>
+              <button class="btn btn-danger" id="stress-stop" disabled>Parar</button>
+            </div>
+            <div class="stat-row">
+              <div class="stat"><b id="st-elapsed">0s</b><span>tempo</span></div>
+              <div class="stat"><b id="st-done">0</b><span>requisições OK</span></div>
+              <div class="stat"><b id="st-err">0</b><span>erros</span></div>
+              <div class="stat"><b id="st-hosts">0</b><span>instâncias vistas</span></div>
+            </div>
+          </div>
+          <div class="panel">
+            <h3 style="margin-top:0">Instâncias que responderam</h3>
+            <p class="sub" style="margin-bottom:12px">Hostnames vistos pelas respostas do ALB. Novas instâncias aparecem aqui quando o ASG escala.</p>
+            <ul class="host-list" id="host-list"><li><span>—</span><span>aguardando</span></li></ul>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Formulário de jogo -->
+    <dialog id="game-dialog">
+      <form id="game-form" method="dialog">
+        <h2 id="dialog-title">Novo jogo</h2>
+        <div class="grid-2">
+          <div class="field"><label for="f-home">Mandante</label><input id="f-home" required /></div>
+          <div class="field"><label for="f-away">Visitante</label><input id="f-away" required /></div>
+        </div>
+        <div class="grid-2">
+          <div class="field"><label for="f-stadium">Estádio</label>
+            <select id="f-stadium" required>
+              <option value="Arena Castelão">Arena Castelão</option>
+              <option value="Estádio Presidente Vargas">Estádio Presidente Vargas</option>
+            </select></div>
+          <div class="field"><label for="f-date">Data e hora</label><input id="f-date" type="datetime-local" required /></div>
+        </div>
+        <div class="grid-2">
+          <div class="field"><label for="f-price">Preço (R$)</label><input id="f-price" type="number" min="0" step="0.01" required /></div>
+          <div class="field"><label for="f-available">Ingressos disponíveis</label><input id="f-available" type="number" min="0" step="1" required /></div>
+        </div>
+        <div class="field"><label for="f-category">Setor</label><input id="f-category" placeholder="Arquibancada, Cadeira, Camarote..." /></div>
+        <div class="field"><label for="f-description">Descrição</label><textarea id="f-description" rows="2"></textarea></div>
+        <div class="field"><label for="f-banner">Banner do jogo (imagem)</label><input id="f-banner" type="file" accept="image/*" />
+          <small style="color:var(--muted)">O arquivo vai para o S3 e é redimensionado em segundo plano pelo worker (SQS).</small></div>
+        <div id="form-error" class="alert error hidden"></div>
+        <div class="actions">
+          <button type="button" class="btn btn-ghost" id="cancel-dialog">Cancelar</button>
+          <button type="submit" class="btn btn-primary" id="save-game">Salvar</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="admin.js"></script>
+  </body>
+</html>

@@ -41,6 +41,8 @@ S3_BUCKET_NAME=${s3_bucket_name}
 DYNAMODB_TABLE_NAME=${dynamodb_table_name}
 SQS_QUEUE_URL=${sqs_queue_url}
 SNS_TOPIC_ARN=${sns_topic_arn}
+ADMIN_PASSWORD=${admin_password}
+JWT_SECRET=${jwt_secret}
 EOF
 
 # 6. Cria serviço systemd para a API (Webservice)

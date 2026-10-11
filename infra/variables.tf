@@ -67,7 +67,7 @@ variable "repo_url" {
 
 variable "use_existing_lab_role" {
   description = "Defina como true se estiver usando o AWS Academy Learner Lab (usa LabRole pré-existente)"
-  type        = boolean
+  type        = bool
   default     = false
 }
 
@@ -75,4 +75,11 @@ variable "lab_role_name" {
   description = "Nome da role pré-existente no AWS Academy Learner Lab"
   type        = string
   default     = "LabRole"
+}
+
+variable "admin_password" {
+  description = "Senha da página de administração (/admin). Altere antes do deploy."
+  type        = string
+  sensitive   = true
+  default     = "admin123"
 }
