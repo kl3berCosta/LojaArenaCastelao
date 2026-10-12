@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Meus ingressos | Ingressos Futebol</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="container topbar-content">
+        <a class="brand" href="/">
+          <span class="brand-icon">⚽</span>
+          <span>Ingressos Futebol<small>Castelão · Presidente Vargas</small></span>
+        </a>
+        <nav class="topbar-nav">
+          <a href="/">Jogos disponíveis</a>
+          <a href="/meus-ingressos.html" class="nav-active">🎟️ Meus ingressos</a>
+          <div id="user-nav" class="user-nav"></div>
+        </nav>
+      </div>
+    </header>
+
+    <section class="hero hero-compact">
+      <div class="container hero-content">
+        <h1>Meus ingressos</h1>
+        <p>Todas as suas compras, com o código localizador de cada pedido.</p>
+      </div>
+    </section>
+
+    <main class="container checkout">
+      <!-- Visitante sem login -->
+      <section class="panel hidden" id="login-required">
+        <h2>Entre para ver seus ingressos</h2>
+        <p class="sub">Faça login com a conta usada na compra para consultar seus pedidos.</p>
+        <a class="btn btn-primary" id="go-login" href="/?login=1&next=/meus-ingressos.html">Entrar / Cadastrar</a>
+      </section>
+
+      <!-- Usuário logado -->
+      <section id="my-area" class="hidden">
+        <div class="my-summary" id="summary"></div>
+        <div id="error" class="alert error hidden"></div>
+        <div id="loading" class="empty">Carregando seus ingressos...</div>
+        <div id="tickets" class="my-tickets"></div>
+        <div id="empty" class="panel empty-panel hidden">
+          <h2>Você ainda não comprou ingressos</h2>
+          <p class="sub">Escolha uma partida e garanta o seu lugar no estádio.</p>
+          <a class="btn btn-primary" href="/">Ver jogos disponíveis</a>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="container">
+        <span>© 2026 Ingressos Futebol · Trabalho de Desenvolvimento de Software para Nuvem (UFC)</span>
+        <a href="/admin.html">Área administrativa</a>
+      </div>
+    </footer>
+
+    <script src="meus-ingressos.js"></script>
+  </body>
+</html>

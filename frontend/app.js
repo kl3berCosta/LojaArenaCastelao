@@ -139,6 +139,7 @@ function renderUserNav() {
 
   if (state.user) {
     container.innerHTML = `
+      <a href="/meus-ingressos.html" class="nav-tickets-link">🎟️ Meus ingressos</a>
       <div class="user-session">
         <span class="user-pill">👤 <strong>${esc(state.user.name)}</strong></span>
         <button type="button" class="btn-logout" id="btn-logout" title="Sair da conta">Sair</button>
@@ -580,10 +581,29 @@ $('new-purchase').addEventListener('click', () => {
   showStep(1);
 });
 
+/* ---------- Redirecionamento vindo de outras telas (ex.: "Meus ingressos") ---------- */
+// Só aceita caminhos internos (começando com uma única "/"), para não virar redirecionamento aberto.
+function safeNextPath() {
+  const next = new URLSearchParams(window.location.search).get('next');
+  return next && /^\/(?!\/)/.test(next) ? next : null;
+}
+
+function handleLoginRedirect() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('login') !== '1') return;
+  const next = safeNextPath();
+  if (state.user) {
+    if (next) window.location.replace(next);
+    return;
+  }
+  openAuthModal(next ? () => window.location.replace(next) : undefined);
+}
+
 /* ---------- Inicialização ---------- */
 (async function init() {
   loadSavedUser();
   renderUserNav();
+  handleLoginRedirect();
   try {
     await loadEvents();
   } catch (e) {

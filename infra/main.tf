@@ -558,7 +558,7 @@ resource "aws_launch_template" "app" {
   }
 
   iam_instance_profile {
-    name = var.use_existing_lab_role ? var.lab_role_name : aws_iam_instance_profile.ec2[0].name
+    name = var.use_existing_lab_role ? var.lab_instance_profile_name : aws_iam_instance_profile.ec2[0].name
   }
 
   # Monitoramento detalhado: métricas de CPU a cada 1 minuto. Sem isso o EC2 publica a cada 5 minutos e

@@ -582,3 +582,25 @@ pre.json { margin: 8px 0 0; padding: 10px; background: #f7f9fe; border-radius: 8
   .topbar nav a { margin-left: 10px; }
   .games-header { flex-direction: column; align-items: flex-start; }
 }
+
+/* Tela "Meus ingressos" */
+.nav-tickets-link { margin-right: 8px; }
+.topbar-nav a.nav-active { color: #fff; border-bottom: 2px solid var(--sun); padding-bottom: 2px; }
+.hero-compact { padding: 36px 0 84px; } /* folga para os cartões de resumo, que sobem sobre o cabeçalho */
+.hero-compact h1 { margin-bottom: 6px; }
+.my-summary { display: flex; flex-wrap: wrap; gap: 14px; margin: 0 auto 8px; max-width: 760px; }
+.my-stat {
+  flex: 1 1 150px; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 16px 20px; display: flex; flex-direction: column; gap: 2px;
+}
+.my-stat strong { font-size: 1.5rem; color: var(--navy); font-weight: 800; }
+.my-stat span { color: var(--muted); font-size: .85rem; text-transform: uppercase; letter-spacing: .05em; font-weight: 700; }
+.my-tickets { display: flex; flex-direction: column; gap: 6px; }
+.my-ticket { width: 100%; max-width: 760px; }
+.my-ticket-img { width: 100%; height: 110px; object-fit: cover; border-radius: 12px; margin-bottom: 14px; }
+.my-ticket-date { display: block; margin-top: 4px; font-weight: 600; font-size: .78rem; color: #c9d6ee; }
+.empty-panel { text-align: center; max-width: 560px; margin: 24px auto; }
+@media (max-width: 640px) {
+  .my-ticket { flex-direction: column; }
+  .my-ticket .ticket-stub { width: 100%; border-left: 0; border-top: 3px dashed #cdd6e8; }
+}

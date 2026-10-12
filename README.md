@@ -67,13 +67,27 @@ flowchart TD
 
 ```text
 ├── backend/
-│   ├── server.js            # Webservice principal da API e rotas de eventos/pedidos
-│   ├── worker.js            # Worker desacoplado que consome fila SQS e processa imagens
-│   ├── schema.sql           # Esquema relacional para PostgreSQL (RDS)
+│   ├── server.js            # Ponto de entrada: sobe o Express (src/app.js) e inicializa RDS/Redis
+│   ├── worker.js            # Worker desacoplado: consome a fila, redimensiona imagens (sharp)
+│   ├── schema.sql           # Esquema relacional (RDS PostgreSQL) - fonte única
 │   ├── test-api.test.js     # Testes automatizados da API e do Worker (Node test runner)
-│   └── package.json         # Dependências (Express, pg, redis, sharp, AWS SDK v3)
+│   ├── package.json         # Dependências (Express, pg, redis, sharp, AWS SDK v3)
+│   └── src/                 # Arquitetura MVC, um módulo (pasta) por CRUD
+│       ├── app.js           # Monta o Express: middlewares + rotas de cada módulo
+│       ├── bootstrap.js     # Inicialização (schema do RDS, Redis)
+│       ├── config/          # Variáveis de ambiente e caminhos
+│       ├── lib/             # Infra compartilhada: db (RDS), cache (Redis), storage (S3), queue (SNS/SQS), localStore (dev)
+│       ├── middlewares/     # auth (JWT/admin), upload (multer), errorHandler
+│       └── modules/
+│           ├── events/      # CRUD de jogos: model, controller, routes, validation
+│           ├── orders/      # Compra (estoque atômico), listagem (admin) e "meus ingressos": model, controller, routes
+│           ├── users/       # Cadastro e login de clientes: model, controller, routes, password
+│           ├── auth/        # Login do administrador
+│           ├── audit/       # Auditoria no DynamoDB: model, controller, routes
+│           └── system/      # /health (ALB) e /stress (teste de elasticidade)
 ├── frontend/
 │   ├── index.html           # Vitrine, login e checkout
+│   ├── meus-ingressos.html / .js # Tela "Meus ingressos": pedidos do usuário logado
 │   ├── admin.html / admin.js # Painel admin: CRUD, pedidos, auditoria, monitor AWS e teste de carga
 │   ├── app.js               # Integração assíncrona da vitrine/checkout
 │   └── styles.css           # Estilização moderna e responsiva
@@ -87,6 +101,19 @@ flowchart TD
 ├── docker-compose.yml       # Ambiente local com PostgreSQL e Redis para testes
 └── README.md                # Este documento
 ```
+
+### Padrão MVC por módulo
+
+Cada recurso fica em sua pasta em `backend/src/modules/<recurso>/` com:
+
+| Camada | Arquivo | Responsabilidade |
+| :--- | :--- | :--- |
+| **Model** | `*.model.js` | Acesso a dados (RDS ou store local em dev). Sem conhecer HTTP. |
+| **Controller** | `*.controller.js` | Valida a entrada e orquestra model + S3 + cache + auditoria + fila; monta a resposta. |
+| **Routes** | `*.routes.js` | Liga URL/verbo HTTP aos controllers e aplica os middlewares (admin, usuário, upload). |
+| **View** | `frontend/` | Interface web que consome a API JSON. |
+
+Para criar um novo CRUD, crie a pasta do módulo e registre suas rotas em `src/app.js`.
 
 ---
 
@@ -120,7 +147,7 @@ Acesse a interface no navegador em: `http://localhost:3000`
 cd backend
 npm test
 ```
-*Executa 12 testes: rotas da API, healthcheck dos 6 serviços, autenticação, validações, upload só de imagens, compras concorrentes (nunca vende acima do estoque), log de auditoria e processamento desacoplado do Worker. Funcionam em modo local e também com `DATABASE_URL`/`REDIS_URL` apontando para Postgres/Redis reais.*
+*Executa 13 testes: rotas da API, healthcheck dos 6 serviços, autenticação, validações, upload só de imagens, compras concorrentes (nunca vende acima do estoque), "Meus ingressos" (cada usuário só vê os próprios), log de auditoria e processamento desacoplado do Worker. Os testes usam pastas temporárias e podem ser repetidos à vontade. Funcionam em modo local e também com `DATABASE_URL`/`REDIS_URL` apontando para Postgres/Redis reais.*
 
 ---
 

@@ -73,7 +73,7 @@ cp terraform.tfvars.example terraform.tfvars
 **Obrigatório preencher** `db_password`, `admin_password` e `repo_url` (não há senhas padrão). O `repo_url` deve apontar para o repositório que contém `backend/` e `frontend/` na raiz.
 
 > [!TIP]
-> **AWS Academy Learner Lab:** `use_existing_lab_role = true` (usa a `LabRole`) já é o padrão.
+> **AWS Academy Learner Lab:** `use_existing_lab_role = true` (usa o instance profile `LabInstanceProfile`, que carrega a role `LabRole`) já é o padrão.
 > Se o Terraform falhar ao criar/ler o bucket S3 por causa da SCP do Academy
 > (`s3:GetBucketObjectLockConfiguration`), crie o bucket manualmente e use:
 > ```hcl

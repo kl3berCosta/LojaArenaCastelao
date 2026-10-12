@@ -74,10 +74,10 @@ variable "use_existing_lab_role" {
   default     = true
 }
 
-variable "lab_role_name" {
-  description = "Nome da role/instance profile pré-existente no AWS Academy Learner Lab"
+variable "lab_instance_profile_name" {
+  description = "Nome do INSTANCE PROFILE pré-existente no AWS Academy Learner Lab. Atenção: o perfil se chama LabInstanceProfile (ele usa a role LabRole); o nome da role não funciona aqui."
   type        = string
-  default     = "LabRole"
+  default     = "LabInstanceProfile"
 }
 
 variable "admin_password" {

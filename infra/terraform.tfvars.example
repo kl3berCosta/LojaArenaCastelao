@@ -18,7 +18,8 @@ repo_url = "https://github.com/SEU_USUARIO/SEU_REPOSITORIO.git"
 admin_password = "TROQUE-esta-senha-admin"
 
 # --- AWS Academy Learner Lab ---------------------------------------------
-# use_existing_lab_role = true já é o padrão (usa a LabRole). Em conta comum use false.
+# use_existing_lab_role = true já é o padrão (usa o instance profile LabInstanceProfile / role LabRole).
+# Em conta comum use false.
 # use_existing_lab_role = false
 #
 # Se a SCP do Academy bloquear a criação/leitura do bucket, crie o bucket manualmente

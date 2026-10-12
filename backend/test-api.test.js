@@ -1,5 +1,15 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
+// Isolamento: cada execução usa pastas temporárias próprias (modo local), então os testes
+// não dependem de sobras de execuções anteriores e não sujam backend/data nem backend/uploads.
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ingressos-test-'));
+process.env.DATA_DIR = path.join(tmpRoot, 'data');
+process.env.UPLOADS_DIR = path.join(tmpRoot, 'uploads');
+
 const app = require('./server.js');
 const worker = require('./worker.js');
 
@@ -21,6 +31,7 @@ test.after(async () => {
   if (server) {
     await new Promise((resolve) => server.close(resolve));
   }
+  fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
 async function fetchJson(path, options = {}) {
@@ -250,6 +261,62 @@ test('Login usa hash seguro e rejeita senha errada', async () => {
     body: JSON.stringify({ email, password: 'errada' })
   });
   assert.equal(bad.status, 401);
+});
+
+test('GET /orders/mine mostra só os ingressos do próprio usuário', async () => {
+  const register = async (name) => {
+    const res = await fetchJson('/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, email: `${name.toLowerCase()}-${Date.now()}@email.com`, password: 'senha-segura' })
+    });
+    assert.equal(res.status, 201);
+    return res.body.token;
+  };
+  const ana = await register('Ana');
+  const bruno = await register('Bruno');
+
+  const anon = await fetchJson('/orders/mine');
+  assert.equal(anon.status, 401);
+
+  const empty = await fetchJson('/orders/mine', { headers: authJson(ana) });
+  assert.equal(empty.status, 200);
+  assert.deepEqual(empty.body, []);
+
+  const created = await fetchJson('/events', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ teamHome: 'Time Casa', teamAway: 'Time Fora', stadium: 'Arena Castelão', date: '2026-12-10T16:00:00', price: 50, available: 20 })
+  });
+  const target = created.body.event;
+  const buy = await fetchJson('/orders', {
+    method: 'POST',
+    headers: authJson(ana),
+    body: JSON.stringify({ eventId: target.id, quantity: 3 })
+  });
+  assert.equal(buy.status, 201);
+
+  const mine = await fetchJson('/orders/mine', { headers: authJson(ana) });
+  assert.equal(mine.status, 200);
+  assert.equal(mine.body.length, 1);
+  assert.equal(mine.body[0].id, buy.body.order.id);
+  assert.equal(mine.body[0].quantity, 3);
+  assert.equal(mine.body[0].customerName, 'Ana');
+  assert.equal(mine.body[0].event.teamHome, target.teamHome, 'deve trazer os dados do jogo');
+  assert.equal(mine.body[0].event.stadium, target.stadium);
+
+  const others = await fetchJson('/orders/mine', { headers: authJson(bruno) });
+  assert.deepEqual(others.body, [], 'outro usuário não pode ver os ingressos da Ana');
+
+  // Compras mais novas aparecem primeiro
+  const buy2 = await fetchJson('/orders', {
+    method: 'POST',
+    headers: authJson(ana),
+    body: JSON.stringify({ eventId: target.id, quantity: 1 })
+  });
+  const mine2 = await fetchJson('/orders/mine', { headers: authJson(ana) });
+  assert.equal(mine2.body.length, 2);
+  assert.equal(mine2.body[0].id, buy2.body.order.id);
 });
 
 test('GET /audit-logs retorna histórico de ações do CRUD (NoSQL DynamoDB)', async () => {
