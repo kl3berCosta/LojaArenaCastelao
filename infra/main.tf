@@ -198,8 +198,8 @@ resource "aws_iam_policy" "app_permissions" {
           "s3:ListBucket"
         ]
         Resource = [
-          aws_s3_bucket.banners.arn,
-          "${aws_s3_bucket.banners.arn}/*"
+          "arn:aws:s3:::${local.bucket_name}",
+          "arn:aws:s3:::${local.bucket_name}/*"
         ]
       },
       {
@@ -249,38 +249,10 @@ resource "aws_iam_instance_profile" "ec2" {
 # -------------------------------------------------------------------
 # PARTE 1 - SERVIÇO 3: AMAZON S3 (Arquivos Binários - Banners dos Jogos)
 # -------------------------------------------------------------------
-resource "aws_s3_bucket" "banners" {
-  bucket        = local.bucket_name
-  force_destroy = true
-  tags          = local.tags
-}
+# O bucket S3 foi provisionado e configurado diretamente para contornar a restrição
+# de SCP do AWS Academy Learner Lab (s3:GetBucketObjectLockConfiguration).
+# Bucket utilizado: local.bucket_name
 
-resource "aws_s3_bucket_ownership_controls" "banners" {
-  bucket = aws_s3_bucket.banners.id
-  rule {
-    object_ownership = "BucketOwnerPreferred"
-  }
-}
-
-resource "aws_s3_bucket_public_access_block" "banners" {
-  bucket = aws_s3_bucket.banners.id
-
-  block_public_acls       = false
-  block_public_policy     = false
-  ignore_public_acls      = false
-  restrict_public_buckets = false
-}
-
-resource "aws_s3_bucket_cors_configuration" "banners" {
-  bucket = aws_s3_bucket.banners.id
-
-  cors_rule {
-    allowed_headers = ["*"]
-    allowed_methods = ["GET", "PUT", "POST"]
-    allowed_origins = ["*"]
-    max_age_seconds = 3000
-  }
-}
 
 # -------------------------------------------------------------------
 # PARTE 1 - SERVIÇO 5: AMAZON DYNAMODB (Auditoria NoSQL do CRUD)
@@ -354,7 +326,7 @@ resource "aws_db_instance" "postgres" {
   allocated_storage      = 20
   max_allocated_storage  = 50
   engine                 = "postgres"
-  engine_version         = "16.3"
+  engine_version         = "16.9"
   instance_class         = var.db_instance_class
   db_name                = var.db_name
   username               = var.db_username
@@ -475,7 +447,7 @@ resource "aws_launch_template" "app" {
     rds_endpoint        = aws_db_instance.postgres.endpoint
     db_name             = var.db_name
     redis_host          = aws_elasticache_cluster.redis.cache_nodes[0].address
-    s3_bucket_name      = aws_s3_bucket.banners.id
+    s3_bucket_name      = local.bucket_name
     dynamodb_table_name = aws_dynamodb_table.audit_logs.name
     sqs_queue_url       = aws_sqs_queue.banner_tasks.url
     sns_topic_arn       = aws_sns_topic.banner_tasks.arn

@@ -20,7 +20,7 @@ output "elasticache_endpoint" {
 
 output "s3_banners_bucket" {
   description = "Nome do bucket Amazon S3 para arquivos binários (banners dos eventos)"
-  value       = aws_s3_bucket.banners.id
+  value       = local.bucket_name
 }
 
 output "dynamodb_audit_table" {
