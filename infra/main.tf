@@ -70,6 +70,14 @@ resource "aws_security_group" "alb" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  ingress {
+    description = "HTTPS da internet (usado quando acm_certificate_arn e informado)"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   egress {
     description = "Trafego de saida liberado"
     from_port   = 0
@@ -95,12 +103,16 @@ resource "aws_security_group" "ec2" {
     security_groups = [aws_security_group.alb.id]
   }
 
-  ingress {
-    description = "SSH para administracao direta (opcional)"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+  # SSH só existe se um CIDR for informado explicitamente (ex.: "203.0.113.10/32").
+  dynamic "ingress" {
+    for_each = var.ssh_allowed_cidr != "" ? [var.ssh_allowed_cidr] : []
+    content {
+      description = "SSH para administracao direta (restrito)"
+      from_port   = 22
+      to_port     = 22
+      protocol    = "tcp"
+      cidr_blocks = [ingress.value]
+    }
   }
 
   egress {
@@ -194,24 +206,21 @@ resource "aws_iam_policy" "app_permissions" {
         Effect = "Allow"
         Action = [
           "s3:PutObject",
-          "s3:GetObject",
-          "s3:ListBucket"
+          "s3:GetObject"
         ]
-        Resource = [
-          "arn:aws:s3:::${local.bucket_name}",
-          "arn:aws:s3:::${local.bucket_name}/*"
-        ]
+        Resource = "arn:aws:s3:::${local.bucket_name}/*"
       },
       {
         Effect = "Allow"
         Action = [
           "dynamodb:PutItem",
-          "dynamodb:GetItem",
-          "dynamodb:Scan",
           "dynamodb:Query",
-          "dynamodb:UpdateItem"
+          "dynamodb:Scan"
         ]
-        Resource = aws_dynamodb_table.audit_logs.arn
+        Resource = [
+          aws_dynamodb_table.audit_logs.arn,
+          "${aws_dynamodb_table.audit_logs.arn}/index/*"
+        ]
       },
       {
         Effect = "Allow"
@@ -219,11 +228,13 @@ resource "aws_iam_policy" "app_permissions" {
           "sqs:SendMessage",
           "sqs:ReceiveMessage",
           "sqs:DeleteMessage",
-          "sqs:GetQueueAttributes"
+          "sqs:GetQueueAttributes",
+          "sqs:ChangeMessageVisibility"
         ]
         Resource = aws_sqs_queue.banner_tasks.arn
       },
       {
+        # A API publica no SNS (que entrega ao SQS). O envio direto ao SQS é o fallback do código.
         Effect = "Allow"
         Action = [
           "sns:Publish"
@@ -249,10 +260,55 @@ resource "aws_iam_instance_profile" "ec2" {
 # -------------------------------------------------------------------
 # PARTE 1 - SERVIÇO 3: AMAZON S3 (Arquivos Binários - Banners dos Jogos)
 # -------------------------------------------------------------------
-# O bucket S3 foi provisionado e configurado diretamente para contornar a restrição
-# de SCP do AWS Academy Learner Lab (s3:GetBucketObjectLockConfiguration).
-# Bucket utilizado: local.bucket_name
+# O bucket é criado aqui (create_banners_bucket = true, padrão). Em contas com SCP que bloqueia a
+# leitura de configurações do bucket (AWS Academy: s3:GetBucketObjectLockConfiguration), defina
+# create_banners_bucket = false e banners_bucket_name com um bucket criado manualmente;
+# nesse caso aplique a bucket policy de leitura pública de "banners/*" descrita no README.
+# As imagens são públicas por BUCKET POLICY (a aplicação não usa ACL por objeto).
+resource "aws_s3_bucket" "banners" {
+  count         = var.create_banners_bucket ? 1 : 0
+  bucket        = local.bucket_name
+  force_destroy = true # permite "terraform destroy" mesmo com banners enviados
 
+  tags = local.tags
+}
+
+resource "aws_s3_bucket_ownership_controls" "banners" {
+  count  = var.create_banners_bucket ? 1 : 0
+  bucket = aws_s3_bucket.banners[0].id
+
+  rule {
+    object_ownership = "BucketOwnerEnforced"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "banners" {
+  count  = var.create_banners_bucket ? 1 : 0
+  bucket = aws_s3_bucket.banners[0].id
+
+  block_public_acls       = true
+  ignore_public_acls      = true
+  block_public_policy     = false
+  restrict_public_buckets = false
+}
+
+resource "aws_s3_bucket_policy" "banners_public_read" {
+  count  = var.create_banners_bucket ? 1 : 0
+  bucket = aws_s3_bucket.banners[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "PublicReadBanners"
+      Effect    = "Allow"
+      Principal = "*"
+      Action    = "s3:GetObject"
+      Resource  = "${aws_s3_bucket.banners[0].arn}/banners/*"
+    }]
+  })
+
+  depends_on = [aws_s3_bucket_public_access_block.banners]
+}
 
 # -------------------------------------------------------------------
 # PARTE 1 - SERVIÇO 5: AMAZON DYNAMODB (Auditoria NoSQL do CRUD)
@@ -267,29 +323,64 @@ resource "aws_dynamodb_table" "audit_logs" {
     type = "S"
   }
 
+  # Índice para listar a auditoria em ordem cronológica (Scan não garante ordem):
+  # todo item recebe pk = "AUDIT"; a consulta usa pk + timestamp decrescente.
+  attribute {
+    name = "pk"
+    type = "S"
+  }
+
+  attribute {
+    name = "timestamp"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "by-time"
+    hash_key        = "pk"
+    range_key       = "timestamp"
+    projection_type = "ALL"
+  }
+
   tags = local.tags
 }
 
 # -------------------------------------------------------------------
 # PARTE 1 - SERVIÇO 6: AMAZON SQS & SNS (Desacoplamento do Worker)
 # -------------------------------------------------------------------
-resource "aws_sqs_queue" "banner_tasks" {
-  name                       = "${local.project_name}-banner-queue"
-  visibility_timeout_seconds = 180
-  message_retention_seconds  = 86400
+# Fila de mensagens que falharam repetidamente (evita reprocessar mensagens "venenosas" por 24h).
+resource "aws_sqs_queue" "banner_tasks_dlq" {
+  name                      = "${local.project_name}-banner-dlq"
+  message_retention_seconds = 1209600
 
   tags = local.tags
 }
 
+resource "aws_sqs_queue" "banner_tasks" {
+  name                       = "${local.project_name}-banner-queue"
+  visibility_timeout_seconds = 180
+  message_retention_seconds  = 86400
+  receive_wait_time_seconds  = 5
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.banner_tasks_dlq.arn
+    maxReceiveCount     = 5
+  })
+
+  tags = local.tags
+}
+
+# Fluxo de desacoplamento: API -> SNS (tópico) -> SQS (assinatura) -> Worker.
 resource "aws_sns_topic" "banner_tasks" {
   name = "${local.project_name}-banner-topic"
   tags = local.tags
 }
 
 resource "aws_sns_topic_subscription" "sqs_sub" {
-  topic_arn = aws_sns_topic.banner_tasks.arn
-  protocol  = "sqs"
-  endpoint  = aws_sqs_queue.banner_tasks.arn
+  topic_arn            = aws_sns_topic.banner_tasks.arn
+  protocol             = "sqs"
+  endpoint             = aws_sqs_queue.banner_tasks.arn
+  raw_message_delivery = true
 }
 
 resource "aws_sqs_queue_policy" "sqs_policy" {
@@ -300,7 +391,7 @@ resource "aws_sqs_queue_policy" "sqs_policy" {
     Statement = [{
       Sid       = "AllowSNS"
       Effect    = "Allow"
-      Principal = "*"
+      Principal = { Service = "sns.amazonaws.com" }
       Action    = "sqs:SendMessage"
       Resource  = aws_sqs_queue.banner_tasks.arn
       Condition = {
@@ -326,15 +417,21 @@ resource "aws_db_instance" "postgres" {
   allocated_storage      = 20
   max_allocated_storage  = 50
   engine                 = "postgres"
-  engine_version         = "16.9"
+  engine_version         = "16"
   instance_class         = var.db_instance_class
   db_name                = var.db_name
   username               = var.db_username
   password               = var.db_password
   db_subnet_group_name   = aws_db_subnet_group.rds.name
   vpc_security_group_ids = [aws_security_group.rds.id]
-  publicly_accessible    = true
+  publicly_accessible    = false # acessível apenas de dentro da VPC (Security Group libera só as EC2)
   skip_final_snapshot    = true
+  storage_encrypted      = true
+
+  lifecycle {
+    # Com engine_version apenas major ("16") a AWS escolhe a minor e faz upgrades automáticos.
+    ignore_changes = [engine_version]
+  }
 
   tags = local.tags
 }
@@ -394,10 +491,35 @@ resource "aws_lb_target_group" "app" {
   tags = local.tags
 }
 
+# Com certificado ACM informado: HTTP redireciona para HTTPS e o HTTPS encaminha ao Target Group.
+# Sem certificado: HTTP encaminha direto (adequado só para laboratório/demonstração).
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.app.arn
   port              = 80
   protocol          = "HTTP"
+
+  default_action {
+    type             = var.acm_certificate_arn != "" ? "redirect" : "forward"
+    target_group_arn = var.acm_certificate_arn != "" ? null : aws_lb_target_group.app.arn
+
+    dynamic "redirect" {
+      for_each = var.acm_certificate_arn != "" ? [1] : []
+      content {
+        port        = "443"
+        protocol    = "HTTPS"
+        status_code = "HTTP_301"
+      }
+    }
+  }
+}
+
+resource "aws_lb_listener" "https" {
+  count             = var.acm_certificate_arn != "" ? 1 : 0
+  load_balancer_arn = aws_lb.app.arn
+  port              = 443
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+  certificate_arn   = var.acm_certificate_arn
 
   default_action {
     type             = "forward"
@@ -439,11 +561,22 @@ resource "aws_launch_template" "app" {
     name = var.use_existing_lab_role ? var.lab_role_name : aws_iam_instance_profile.ec2[0].name
   }
 
+  # Monitoramento detalhado: métricas de CPU a cada 1 minuto. Sem isso o EC2 publica a cada 5 minutos e
+  # os alarmes de 60s do Auto Scaling ficam sem dados / reagem com atraso.
+  monitoring {
+    enabled = true
+  }
+
+  metadata_options {
+    http_endpoint = "enabled"
+    http_tokens   = "required" # IMDSv2
+  }
+
   user_data = base64encode(templatefile("${path.module}/user_data.sh.tpl", {
     repo_url            = var.repo_url
     aws_region          = var.aws_region
-    db_username         = var.db_username
-    db_password         = var.db_password
+    db_username         = urlencode(var.db_username)
+    db_password         = urlencode(var.db_password) # a senha vai dentro da DATABASE_URL
     rds_endpoint        = aws_db_instance.postgres.endpoint
     db_name             = var.db_name
     redis_host          = aws_elasticache_cluster.redis.cache_nodes[0].address
@@ -464,6 +597,11 @@ resource "aws_launch_template" "app" {
 
   lifecycle {
     create_before_destroy = true
+
+    precondition {
+      condition     = var.create_banners_bucket || var.banners_bucket_name != ""
+      error_message = "Com create_banners_bucket = false informe banners_bucket_name (bucket criado manualmente)."
+    }
   }
 }
 
@@ -475,7 +613,9 @@ resource "aws_autoscaling_group" "app" {
   vpc_zone_identifier = data.aws_subnets.default.ids
   target_group_arns   = [aws_lb_target_group.app.arn]
   health_check_type   = "ELB"
-  health_check_grace_period = 180
+  # O user_data instala Node, dependências nativas (sharp) e sobe os serviços numa t3.micro:
+  # precisa de folga para não ser terminada pelo health check do ELB antes de ficar pronta.
+  health_check_grace_period = 600
 
   launch_template {
     id      = aws_launch_template.app.id
@@ -508,13 +648,14 @@ resource "aws_autoscaling_policy" "scale_out" {
 
 resource "aws_cloudwatch_metric_alarm" "cpu_high" {
   alarm_name          = "${local.project_name}-cpu-high-gt-70"
-  comparison_operator = "GreaterThanOrEqualToThreshold"
+  comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 1
   metric_name         = "CPUUtilization"
   namespace           = "AWS/EC2"
   period              = 60 # 1 minuto
   statistic           = "Average"
   threshold           = 70 # 70%
+  treat_missing_data  = "notBreaching"
   alarm_description   = "Aciona Scale-Out se uso medio de CPU exceder 70% por mais de 1 minuto"
   alarm_actions       = [aws_autoscaling_policy.scale_out.arn]
 
@@ -534,13 +675,14 @@ resource "aws_autoscaling_policy" "scale_in" {
 
 resource "aws_cloudwatch_metric_alarm" "cpu_low" {
   alarm_name          = "${local.project_name}-cpu-low-lt-25"
-  comparison_operator = "LessThanOrEqualToThreshold"
+  comparison_operator = "LessThanThreshold"
   evaluation_periods  = 1
   metric_name         = "CPUUtilization"
   namespace           = "AWS/EC2"
   period              = 60 # 1 minuto
   statistic           = "Average"
   threshold           = 25 # 25%
+  treat_missing_data  = "notBreaching"
   alarm_description   = "Aciona Scale-In se uso medio de CPU ficar abaixo de 25% por mais de 1 minuto"
   alarm_actions       = [aws_autoscaling_policy.scale_in.arn]
 

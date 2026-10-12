@@ -1,4 +1,4 @@
-# Exemplo de configuração de variáveis do Terraform
+# Exemplo de configuração. Copie para terraform.tfvars (que NÃO é versionado) e preencha os valores.
 aws_region        = "us-east-1"
 project_name      = "stadium-tickets"
 environment       = "dev"
@@ -6,17 +6,26 @@ instance_type     = "t3.micro"
 db_instance_class = "db.t3.micro"
 redis_node_type   = "cache.t3.micro"
 
-# Credenciais do Banco Relacional RDS
+# Banco relacional (RDS). A senha não tem valor padrão: mínimo 12 caracteres, sem / @ " ou espaço.
 db_name     = "stadiumdb"
 db_username = "postgresadmin"
-db_password = "StadiumPass2026!"
+db_password = "TROQUE-por-uma-senha-forte"
 
-# URL do repositório para a EC2 clonar
-repo_url = "https://github.com/Jeovani4lv3s/LojadeIngressos.git"
+# Repositório que a EC2 clona (precisa ter backend/ e frontend/ na raiz)
+repo_url = "https://github.com/SEU_USUARIO/SEU_REPOSITORIO.git"
 
-# Caso esteja executando em conta do AWS Academy Learner Lab:
-# use_existing_lab_role = true
-# lab_role_name         = "LabRole"
+# Senha da página /admin (mínimo 8 caracteres; sem espaços, aspas, $, # ou \)
+admin_password = "TROQUE-esta-senha-admin"
 
-# Senha da página /admin (troque!)
-admin_password = "TroqueEstaSenha2026"
+# --- AWS Academy Learner Lab ---------------------------------------------
+# use_existing_lab_role = true já é o padrão (usa a LabRole). Em conta comum use false.
+# use_existing_lab_role = false
+#
+# Se a SCP do Academy bloquear a criação/leitura do bucket, crie o bucket manualmente
+# (ver infra/README.md) e use:
+# create_banners_bucket = false
+# banners_bucket_name   = "nome-do-seu-bucket"
+
+# --- Opcionais -------------------------------------------------------------
+# ssh_allowed_cidr    = "203.0.113.10/32"   # vazio = SSH fechado
+# acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/..."   # habilita HTTPS no ALB

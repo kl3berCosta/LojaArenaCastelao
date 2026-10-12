@@ -1,4 +1,5 @@
--- Esquema Relacional (Amazon RDS PostgreSQL) para Loja de Ingressos
+-- Esquema Relacional (Amazon RDS PostgreSQL) para Loja de Ingressos.
+-- Fonte única: também é executado pelo server.js na inicialização (idempotente).
 
 CREATE TABLE IF NOT EXISTS events (
     id VARCHAR(100) PRIMARY KEY,
@@ -8,7 +9,7 @@ CREATE TABLE IF NOT EXISTS events (
     event_date TIMESTAMPTZ NOT NULL,
     category VARCHAR(100) DEFAULT 'Arquibancada',
     price NUMERIC(10,2) NOT NULL DEFAULT 100.00,
-    available INTEGER NOT NULL DEFAULT 100,
+    available INTEGER NOT NULL DEFAULT 100 CHECK(available >= 0),
     description TEXT,
     banner_url TEXT,
     thumbnail_url TEXT,
@@ -19,7 +20,8 @@ CREATE TABLE IF NOT EXISTS events (
 
 CREATE TABLE IF NOT EXISTS orders (
     id VARCHAR(100) PRIMARY KEY,
-    event_id VARCHAR(100) NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    -- Sem FK/CASCADE de propósito: excluir um jogo não pode apagar o histórico de vendas.
+    event_id VARCHAR(100) NOT NULL,
     event_name VARCHAR(200) NOT NULL,
     customer_name VARCHAR(150) NOT NULL,
     customer_email VARCHAR(150) NOT NULL,

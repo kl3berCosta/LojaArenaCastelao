@@ -509,16 +509,24 @@ $('confirm-order').addEventListener('click', async () => {
   try {
     const res = await fetch(`${API}/orders`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${localStorage.getItem(TOKEN_KEY) || ''}`
+      },
+      // Nome e e-mail do comprador vêm do token no servidor; aqui só vão evento e quantidade.
       body: JSON.stringify({
         eventId: state.event.id,
-        quantity: state.quantity,
-        customerName: state.user.name,
-        customerEmail: state.user.email
+        quantity: state.quantity
       })
     });
 
     const body = await res.json().catch(() => ({}));
+    if (res.status === 401) {
+      // Sessão inválida/expirada: força novo login e retoma a compra depois.
+      logoutUser();
+      openAuthModal(() => renderStep3());
+      throw new Error('Sua sessão expirou. Entre novamente para concluir a compra.');
+    }
     if (!res.ok) throw new Error(body.message || 'Não foi possível concluir a compra.');
 
     state.order = body.order;

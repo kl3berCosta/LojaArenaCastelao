@@ -271,7 +271,9 @@ function startStress() {
   const worker = async () => {
     while (!s.stop && (Date.now() - s.t0) / 1000 < secs) {
       try {
-        const res = await fetch(`${API}/stress?duration=4000`);
+        const res = await fetch(`${API}/stress?duration=4000`, {
+          headers: { Authorization: `Bearer ${sessionStorage.getItem(TOKEN_KEY) || ''}` }
+        });
         const body = await res.json();
         if (!res.ok) throw new Error('http');
         s.done++;

@@ -42,8 +42,8 @@ flowchart TD
     EC2_1 --> Redis
     EC2_1 --> S3
     EC2_1 --> Dynamo
-    EC2_1 -->|Publica Upload| SQS
-    SNS --> SQS
+    EC2_1 -->|Publica tarefa| SNS
+    SNS -->|Assinatura| SQS
     EC2_1 -->|Worker consome fila| SQS
 ```
 
@@ -54,11 +54,11 @@ flowchart TD
 | Requisito do Trabalho | Serviço AWS Utilizado | Como foi implementado |
 | :--- | :--- | :--- |
 | **1. Execução na EC2** | Amazon EC2 | Aplicação Node.js rodando em instâncias EC2 (`t3.micro`) configuradas via `systemd` e `user_data`. |
-| **2. Banco Relacional** | Amazon RDS (PostgreSQL) | Persistência de eventos e pedidos com transações atômicas de concorrência garantindo que torcedores não comprem o mesmo assento. |
-| **3. Arquivo Binário** | Amazon S3 | Armazenamento dos banners oficiais dos jogos (`banners/raw/`) e dos thumbnails otimizados (`banners/processed/`). |
+| **2. Banco Relacional** | Amazon RDS (PostgreSQL) | Fonte única de verdade para eventos, pedidos **e usuários** (compartilhados por todas as instâncias do ASG). Compra com `UPDATE ... WHERE available >= n` transacional: nunca vende mais que o estoque. Se o RDS falhar a API retorna erro (sem fallback para arquivo local). |
+| **3. Arquivo Binário** | Amazon S3 | Armazenamento dos banners (`banners/raw/`) e thumbnails (`banners/processed/`). Só aceita imagens (JPEG/PNG/WEBP/GIF); leitura pública via bucket policy (sem ACL). O Terraform cria o bucket. |
 | **4. Cache em Memória** | Amazon ElastiCache (Redis) | Cache acelerador de alta frequência para a listagem de jogos e estoque disponível (`events:list`), invalidado a cada nova compra. |
-| **5. Auditoria NoSQL** | Amazon DynamoDB | Registro de todas as operações de CRUD (`CREATE`, `READ`, `UPDATE`, `DELETE`, `ORDER`, `PROCESS_BANNER`) com tipo de ação, dados manipulados e timestamp. |
-| **6. Desacoplamento Assíncrono** | Amazon SNS / SQS | Webservice recebe o banner e responde `201 Created` imediatamente. O processamento pesado de rescaling com `sharp` é realizado pelo **Worker** desacoplado (`worker.js`). |
+| **5. Auditoria NoSQL** | Amazon DynamoDB | Registro de todas as operações de CRUD (`CREATE`, `READ`, `UPDATE`, `DELETE`, `ORDER`, `RESCALE_BANNER_*`) com tipo de ação, dados manipulados e timestamp. Um índice (`by-time`) lista os registros mais recentes em ordem. |
+| **6. Desacoplamento Assíncrono** | Amazon SNS / SQS | Webservice grava o banner no S3, publica a tarefa no **tópico SNS** (entregue à **fila SQS**) e responde `201 Created` imediatamente. O rescaling com `sharp` é feito pelo **Worker** desacoplado (`worker.js`). Há **DLQ** para mensagens que falham repetidamente. |
 | **Parte 2: Elasticidade Horizontal** | ALB + Auto Scaling Group | Balanceador de carga à frente de 1 a 3 instâncias com regras de escalabilidade por CPU (>70% escala +1, <25% escala -1 por mais de 1 minuto). |
 
 ---
@@ -71,13 +71,14 @@ flowchart TD
 │   ├── worker.js            # Worker desacoplado que consome fila SQS e processa imagens
 │   ├── schema.sql           # Esquema relacional para PostgreSQL (RDS)
 │   ├── test-api.test.js     # Testes automatizados da API e do Worker (Node test runner)
-│   └── package.json         # Dependências (Express, pg, redis, sharp, aws-sdk)
+│   └── package.json         # Dependências (Express, pg, redis, sharp, AWS SDK v3)
 ├── frontend/
-│   ├── index.html           # Interface web com monitor AWS, vitrine, checkout e auditoria
-│   ├── app.js               # Integração assíncrona, CRUD completo e testes de estresse
+│   ├── index.html           # Vitrine, login e checkout
+│   ├── admin.html / admin.js # Painel admin: CRUD, pedidos, auditoria, monitor AWS e teste de carga
+│   ├── app.js               # Integração assíncrona da vitrine/checkout
 │   └── styles.css           # Estilização moderna e responsiva
 ├── infra/
-│   ├── main.tf              # Provisionamento completo em Terraform (ALB, ASG, RDS, Cache, S3, DynamoDB, SQS)
+│   ├── main.tf              # Provisionamento completo em Terraform (ALB, ASG, RDS, Cache, S3, DynamoDB, SNS/SQS + DLQ)
 │   ├── variables.tf         # Declaração de variáveis
 │   ├── outputs.tf           # Saídas da infraestrutura (URL do ALB, endpoints dos bancos)
 │   ├── user_data.sh.tpl     # Script de bootstrap automatizado para a EC2
@@ -92,9 +93,12 @@ flowchart TD
 ## 💻 Como Executar Localmente
 
 ### 1. Iniciar Banco e Cache Locais (Opcional)
-Se desejar testar com PostgreSQL e Redis locais via Docker:
+Sem `DATABASE_URL` a API usa um arquivo local (`backend/data/store.json`) — **apenas para desenvolvimento**.
+Para testar com PostgreSQL e Redis locais via Docker:
 ```bash
 docker compose up -d
+cd backend && cp .env.example .env   # já aponta para os containers
+export $(grep -v '^#' .env | xargs)  # ou: node --env-file=.env server.js
 ```
 
 ### 2. Rodar a API e o Worker
@@ -116,7 +120,7 @@ Acesse a interface no navegador em: `http://localhost:3000`
 cd backend
 npm test
 ```
-*Executa 7 testes cobrindo todas as rotas da API, healthcheck dos 6 serviços, compras concorrentes, logs do DynamoDB e processamento desacoplado do Worker.*
+*Executa 12 testes: rotas da API, healthcheck dos 6 serviços, autenticação, validações, upload só de imagens, compras concorrentes (nunca vende acima do estoque), log de auditoria e processamento desacoplado do Worker. Funcionam em modo local e também com `DATABASE_URL`/`REDIS_URL` apontando para Postgres/Redis reais.*
 
 ---
 
@@ -126,7 +130,7 @@ Para subir a infraestrutura completa na nuvem e obter a URL do Application Load 
 
 ```bash
 cd infra
-cp terraform.tfvars.example terraform.tfvars
+cp terraform.tfvars.example terraform.tfvars   # preencha db_password, admin_password e repo_url
 terraform init
 terraform plan
 terraform apply -auto-approve
@@ -142,8 +146,8 @@ application_url = "http://stadium-tickets-alb-XXXXX.us-east-1.elb.amazonaws.com"
 ## 🎥 Demonstração da Parte 2 (Vídeo do Auto Scaling)
 
 A especificação do trabalho exige um vídeo demonstrando o Auto Scaling respondendo à carga:
-1. Acesse a aplicação pela URL do Load Balancer.
-2. Na seção **"⚡ Teste de Elasticidade & Auto Scaling"**, selecione a duração de **75 segundos** e clique em **"🔥 Iniciar Carga de CPU"**.
+1. Acesse o painel `http://<URL-do-ALB>/admin.html` e entre com a senha de administrador.
+2. Na seção de **teste de carga**, defina as requisições simultâneas e a duração (ex.: 300s) e clique em **"⚡ Iniciar carga"** (a rota `/stress` é restrita ao admin).
 3. No console da AWS, acompanhe:
    - A CPU média subindo acima de 70% por 1 minuto.
    - O alarme do **CloudWatch** disparando a política de Scale-Out.

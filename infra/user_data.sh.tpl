@@ -10,8 +10,8 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y git curl build-essential
 
-# 2. Instala Node.js 20 LTS
-curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+# 2. Instala Node.js 22 LTS
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt-get install -y nodejs
 
 echo "Node version: $(node -v)"
@@ -25,13 +25,17 @@ if [ ! -d ".git" ]; then
   git clone ${repo_url} /opt/app
 fi
 
+# Usuário de sistema sem login: a API e o worker não precisam rodar como root.
+id -u stadium &>/dev/null || useradd --system --home /opt/app --shell /usr/sbin/nologin stadium
+
 cd /opt/app/backend
 
-# 4. Instala dependências do backend
-npm install --omit=dev
+# 4. Instala dependências do backend (reprodutível: usa o package-lock.json)
+npm ci --omit=dev
 
 # 5. Cria arquivo de ambiente (.env) com as credenciais da AWS provisionadas pelo Terraform
 cat << 'EOF' > /opt/app/backend/.env
+NODE_ENV=production
 PORT=3000
 AWS_REGION=${aws_region}
 DATABASE_URL=postgresql://${db_username}:${db_password}@${rds_endpoint}/${db_name}
@@ -45,6 +49,10 @@ ADMIN_PASSWORD=${admin_password}
 JWT_SECRET=${jwt_secret}
 EOF
 
+# O .env contém segredos: somente o usuário do serviço pode ler.
+chown -R stadium:stadium /opt/app
+chmod 600 /opt/app/backend/.env
+
 # 6. Cria serviço systemd para a API (Webservice)
 cat << 'EOF' > /etc/systemd/system/stadium-api.service
 [Unit]
@@ -53,14 +61,14 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
+User=stadium
 WorkingDirectory=/opt/app/backend
 EnvironmentFile=/opt/app/backend/.env
 ExecStart=/usr/bin/node server.js
 Restart=always
 RestartSec=5
-StandardOutput=syslog
-StandardError=syslog
+StandardOutput=journal
+StandardError=journal
 SyslogIdentifier=stadium-api
 
 [Install]
@@ -75,14 +83,14 @@ After=network.target stadium-api.service
 
 [Service]
 Type=simple
-User=root
+User=stadium
 WorkingDirectory=/opt/app/backend
 EnvironmentFile=/opt/app/backend/.env
 ExecStart=/usr/bin/node worker.js
 Restart=always
 RestartSec=5
-StandardOutput=syslog
-StandardError=syslog
+StandardOutput=journal
+StandardError=journal
 SyslogIdentifier=stadium-worker
 
 [Install]

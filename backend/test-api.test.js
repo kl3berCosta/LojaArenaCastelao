@@ -32,6 +32,23 @@ async function fetchJson(path, options = {}) {
   };
 }
 
+let userToken;
+async function getUserToken() {
+  if (userToken) return userToken;
+  const res = await fetchJson('/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Torcedor Fiel', email: `torcedor-${Date.now()}@email.com`, password: 'senha-segura' })
+  });
+  assert.equal(res.status, 201);
+  assert.ok(res.body.token);
+  assert.equal(res.body.user.passwordHash, undefined, 'Resposta não pode expor o hash da senha');
+  userToken = res.body.token;
+  return userToken;
+}
+
+const authJson = (token) => ({ 'Content-Type': 'application/json', Authorization: `Bearer ${token}` });
+
 test('GET /health responde status ok e informa os serviços AWS', async () => {
   const res = await fetchJson('/health');
   assert.equal(res.status, 200);
@@ -84,15 +101,11 @@ test('POST /orders realiza compra e decrementa disponibilidade', async () => {
   const targetEvent = eventsBefore.body[0];
   const initialAvailable = targetEvent.available;
 
+  const token = await getUserToken();
   const buyRes = await fetchJson('/orders', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      eventId: targetEvent.id,
-      quantity: 2,
-      customerName: 'Torcedor Fiel',
-      customerEmail: 'torcedor@email.com'
-    })
+    headers: authJson(token),
+    body: JSON.stringify({ eventId: targetEvent.id, quantity: 2 })
   });
 
   assert.equal(buyRes.status, 201);
@@ -106,6 +119,139 @@ test('POST /orders realiza compra e decrementa disponibilidade', async () => {
   assert.equal(updatedEvent.available, initialAvailable - 2);
 });
 
+test('POST /orders exige login e valida a quantidade', async () => {
+  const events = await fetchJson('/events');
+  const eventId = events.body[0].id;
+
+  const anon = await fetchJson('/orders', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ eventId, quantity: 1 })
+  });
+  assert.equal(anon.status, 401);
+
+  const token = await getUserToken();
+  for (const quantity of [0, -1, 1.5, 'abc', 999]) {
+    const bad = await fetchJson('/orders', {
+      method: 'POST',
+      headers: authJson(token),
+      body: JSON.stringify({ eventId, quantity })
+    });
+    assert.equal(bad.status, 400, `quantity=${quantity} deveria ser rejeitada`);
+  }
+
+  const missing = await fetchJson('/orders', {
+    method: 'POST',
+    headers: authJson(token),
+    body: JSON.stringify({ eventId: 'nao-existe', quantity: 1 })
+  });
+  assert.equal(missing.status, 404);
+});
+
+test('Compras concorrentes nunca vendem mais do que o estoque e geram pedidos distintos', async () => {
+  const created = await fetchJson('/events', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      teamHome: 'A', teamAway: 'B', stadium: 'Arena Castelão', date: '2026-12-01T16:00:00', price: 10, available: 5
+    })
+  });
+  const eventId = created.body.event.id;
+  const token = await getUserToken();
+
+  const results = await Promise.all(Array.from({ length: 12 }, () => fetchJson('/orders', {
+    method: 'POST',
+    headers: authJson(token),
+    body: JSON.stringify({ eventId, quantity: 1 })
+  })));
+
+  const ok = results.filter((r) => r.status === 201);
+  assert.equal(ok.length, 5);
+  assert.equal(results.filter((r) => r.status === 409).length, 7);
+  assert.equal(new Set(ok.map((r) => r.body.order.id)).size, 5, 'ids de pedido devem ser únicos');
+
+  const after = await fetchJson(`/events/${eventId}`);
+  assert.equal(after.body.available, 0);
+});
+
+test('POST/PUT /events validam entrada e PUT ignora campos fora da lista permitida', async () => {
+  const badDate = await fetchJson('/events', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ teamHome: 'A', teamAway: 'B', stadium: 'X', date: 'isto-nao-e-data', price: 10 })
+  });
+  assert.equal(badDate.status, 400);
+
+  const created = await fetchJson('/events', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ teamHome: 'C', teamAway: 'D', stadium: 'X', date: '2026-12-02T16:00:00', price: 20, available: 10 })
+  });
+  const id = created.body.event.id;
+
+  const put = await fetchJson(`/events/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: 'sequestrado', price: 25, available: 0, processingStatus: 'hack' })
+  });
+  assert.equal(put.status, 200);
+  assert.equal(put.body.event.id, id);
+  assert.equal(put.body.event.price, 25);
+  assert.equal(put.body.event.available, 0);
+  assert.notEqual(put.body.event.processingStatus, 'hack');
+
+  const badPut = await fetchJson(`/events/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ price: -5 })
+  });
+  assert.equal(badPut.status, 400);
+});
+
+test('Upload de banner rejeita arquivos que não são imagem', async () => {
+  const form = new FormData();
+  form.append('teamHome', 'A');
+  form.append('teamAway', 'B');
+  form.append('stadium', 'X');
+  form.append('date', '2026-12-03T16:00:00');
+  form.append('price', '10');
+  form.append('banner', new Blob(['<script>alert(1)</script>'], { type: 'text/html' }), 'x.html');
+  const res = await fetch(`${baseUrl}/events`, { method: 'POST', body: form });
+  assert.equal(res.status, 400);
+});
+
+test('Login usa hash seguro e rejeita senha errada', async () => {
+  const email = `login-${Date.now()}@email.com`;
+  const reg = await fetchJson('/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Maria', email, password: 'minha-senha' })
+  });
+  assert.equal(reg.status, 201);
+
+  const dup = await fetchJson('/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Maria', email: email.toUpperCase(), password: 'minha-senha' })
+  });
+  assert.equal(dup.status, 409);
+
+  const ok = await fetchJson('/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password: 'minha-senha' })
+  });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.user.passwordHash, undefined);
+
+  const bad = await fetchJson('/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password: 'errada' })
+  });
+  assert.equal(bad.status, 401);
+});
+
 test('GET /audit-logs retorna histórico de ações do CRUD (NoSQL DynamoDB)', async () => {
   const res = await fetchJson('/audit-logs');
   assert.equal(res.status, 200);
@@ -113,6 +259,8 @@ test('GET /audit-logs retorna histórico de ações do CRUD (NoSQL DynamoDB)', a
   assert.ok(res.body.length > 0);
   const hasCreate = res.body.some((log) => log.action === 'CREATE');
   assert.ok(hasCreate, 'Deveria conter ação CREATE registrada nos logs');
+  assert.ok(res.body.some((log) => log.action === 'ORDER'), 'Deveria conter ação ORDER (compra) nos logs');
+  assert.ok(res.body.every((log) => log.timestamp && log.payload), 'Todo log precisa de ação, dados e horário');
 });
 
 test('GET /stress executa carga de CPU com sucesso', async () => {

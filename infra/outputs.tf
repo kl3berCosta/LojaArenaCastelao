@@ -52,3 +52,8 @@ output "cloudwatch_scale_in_alarm" {
   description = "Alarme do CloudWatch para CPU < 25% (remove -1 instância)"
   value       = aws_cloudwatch_metric_alarm.cpu_low.alarm_name
 }
+
+output "sqs_dead_letter_queue_url" {
+  description = "URL da DLQ que recebe mensagens do processamento de banners que falharam repetidamente"
+  value       = aws_sqs_queue.banner_tasks_dlq.url
+}
