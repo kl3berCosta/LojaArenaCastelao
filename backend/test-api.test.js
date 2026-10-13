@@ -518,10 +518,15 @@ test('Pedido antigo sem PDF: pedir o ingresso reenvia para a fila e o PDF é ger
 
   // Simula um pedido feito antes da geração de PDF: sem tarefas na fila e criado há 1 hora
   while (require('./src/lib/localStore').pullLocalTask()) { /* descarta o fan-out original */ }
-  const storeFile = path.join(process.env.DATA_DIR, 'store.json');
-  const store = JSON.parse(fs.readFileSync(storeFile, 'utf8'));
-  store.orders.find((o) => o.id === orderId).createdAt = new Date(Date.now() - 3600 * 1000).toISOString();
-  fs.writeFileSync(storeFile, JSON.stringify(store));
+  const pool = require('./src/lib/db').getPool();
+  if (pool) {
+    await pool.query("UPDATE orders SET created_at = NOW() - INTERVAL '1 hour' WHERE id = $1", [orderId]);
+  } else {
+    const storeFile = path.join(process.env.DATA_DIR, 'store.json');
+    const store = JSON.parse(fs.readFileSync(storeFile, 'utf8'));
+    store.orders.find((o) => o.id === orderId).createdAt = new Date(Date.now() - 3600 * 1000).toISOString();
+    fs.writeFileSync(storeFile, JSON.stringify(store));
+  }
 
   const first = await fetchJson(`/orders/${orderId}/ticket`, { headers: authJson(token) });
   assert.equal(first.status, 202);
