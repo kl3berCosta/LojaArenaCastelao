@@ -43,3 +43,37 @@ CREATE INDEX IF NOT EXISTS idx_events_date ON events(event_date);
 CREATE INDEX IF NOT EXISTS idx_events_available ON events(available);
 CREATE INDEX IF NOT EXISTS idx_orders_event_id ON orders(event_id);
 CREATE INDEX IF NOT EXISTS idx_orders_customer_email ON orders(customer_email);
+-- Setores de cada jogo (Arquibancada Norte/Sul, Cadeira Central, Camarote): preço e estoque próprios.
+CREATE TABLE IF NOT EXISTS sectors (
+    id VARCHAR(150) PRIMARY KEY,
+    event_id VARCHAR(100) NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    code VARCHAR(30) NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    price NUMERIC(10,2) NOT NULL CHECK(price > 0),
+    capacity INTEGER NOT NULL CHECK(capacity >= 0),
+    available INTEGER NOT NULL CHECK(available >= 0),
+    UNIQUE (event_id, code)
+);
+
+-- Reserva temporária do checkout: o estoque sai do setor ao reservar e volta se a reserva expirar.
+CREATE TABLE IF NOT EXISTS reservations (
+    id VARCHAR(100) PRIMARY KEY,
+    event_id VARCHAR(100) NOT NULL,
+    sector_id VARCHAR(150) NOT NULL,
+    customer_email VARCHAR(150) NOT NULL,
+    quantity INTEGER NOT NULL CHECK(quantity > 0),
+    unit_price NUMERIC(10,2) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'active', -- active | converted | expired | cancelled
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Colunas novas em pedidos (idempotente: funciona em bancos já existentes)
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS sector_id VARCHAR(150);
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS sector_name VARCHAR(100);
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS unit_price NUMERIC(10,2);
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS ticket_status VARCHAR(20) DEFAULT 'pending'; -- pending | ready
+
+CREATE INDEX IF NOT EXISTS idx_sectors_event ON sectors(event_id);
+CREATE INDEX IF NOT EXISTS idx_reservations_active ON reservations(status, expires_at);
+CREATE INDEX IF NOT EXISTS idx_reservations_customer ON reservations(customer_email, status);

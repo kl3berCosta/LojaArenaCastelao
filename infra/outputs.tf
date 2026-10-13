@@ -57,3 +57,28 @@ output "sqs_dead_letter_queue_url" {
   description = "URL da DLQ que recebe mensagens do processamento de banners que falharam repetidamente"
   value       = aws_sqs_queue.banner_tasks_dlq.url
 }
+
+output "cloudwatch_dashboard_url" {
+  description = "Dashboard do CloudWatch com CPU, instâncias, requisições, filas e vendas (use no vídeo da Parte 2)"
+  value       = "https://${var.aws_region}.console.aws.amazon.com/cloudwatch/home?region=${var.aws_region}#dashboards/dashboard/${aws_cloudwatch_dashboard.main.dashboard_name}"
+}
+
+output "sns_order_events_topic_arn" {
+  description = "Tópico SNS do evento PEDIDO_CONFIRMADO (fan-out para as filas de PDF e de e-mail)"
+  value       = aws_sns_topic.order_events.arn
+}
+
+output "sns_customer_emails_topic_arn" {
+  description = "Tópico SNS que envia os e-mails aos clientes (assinaturas com filtro por e-mail)"
+  value       = aws_sns_topic.customer_emails.arn
+}
+
+output "sqs_tickets_queue_url" {
+  description = "Fila SQS que gera o PDF dos ingressos"
+  value       = aws_sqs_queue.order_consumers["tickets"].url
+}
+
+output "sqs_notifications_queue_url" {
+  description = "Fila SQS que envia os e-mails de confirmação"
+  value       = aws_sqs_queue.order_consumers["notifications"].url
+}

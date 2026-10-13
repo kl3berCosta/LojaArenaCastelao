@@ -1,7 +1,8 @@
 // CONTROLLER de jogos: valida a entrada, orquestra model + S3 + auditoria + cache + fila e monta a resposta HTTP.
 const crypto = require('node:crypto');
 const Event = require('./event.model');
-const { parseEventFields } = require('./event.validation');
+const { parseEventFields, parseSectorChanges } = require('./event.validation');
+const Sector = require('../sectors/sector.model');
 const { logCrudAction } = require('../audit/audit.model');
 const { getCached, invalidateCache } = require('../../lib/cache');
 const storage = require('../../lib/storage');
@@ -89,7 +90,8 @@ async function create(req, res) {
       createdAt: new Date().toISOString()
     };
 
-    await Event.create(newEvent); // RDS
+    const created = await Event.create(newEvent); // RDS (jogo + setores, numa transação)
+    newEvent.sectors = created.sectors;
     await logCrudAction('CREATE', 'event', newEvent); // DynamoDB
     await invalidateCache(['events:list']); // Redis
 
@@ -118,10 +120,15 @@ async function update(req, res) {
     }
 
     // Lista branca de campos: ignora id, thumbnailUrl, processingStatus etc. vindos do cliente.
+    // Preço e estoque são editados por setor (campo `sectors`), não no jogo.
     const { values: updates, errors } = parseEventFields(req.body || {}, { partial: true });
+    const { changes: sectorChanges, errors: sectorErrors } = parseSectorChanges(req.body?.sectors);
+    errors.push(...sectorErrors);
     if (errors.length) {
       return res.status(400).json({ message: `Campos inválidos: ${errors.join(', ')}.` });
     }
+    delete updates.price;
+    delete updates.available;
 
     let s3Info = null;
     if (req.file) {
@@ -129,6 +136,10 @@ async function update(req, res) {
       updates.bannerUrl = s3Info.url;
       updates.thumbnailUrl = null; // o thumbnail antigo não corresponde mais ao novo banner
       updates.processingStatus = 'pending';
+    }
+
+    if (sectorChanges && !(await Sector.updateMany(req.params.id, sectorChanges))) {
+      return res.status(400).json({ message: 'Setor não pertence a este jogo.' });
     }
 
     const updated = await Event.update(req.params.id, updates);

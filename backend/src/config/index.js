@@ -22,6 +22,8 @@ module.exports = {
   JWT_SECRET: process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex'),
   AWS_REGION: process.env.AWS_REGION || 'us-east-1',
   MAX_TICKETS_PER_ORDER: 10,
+  // Endereço público do site (o do ALB na AWS), usado nos links enviados por e-mail
+  APP_PUBLIC_URL: (process.env.APP_PUBLIC_URL || `http://localhost:${process.env.PORT || 3000}`).replace(/\/+$/, ''),
 
   // Pastas usadas somente no modo desenvolvimento (sem AWS/RDS configurados)
   BACKEND_DIR,

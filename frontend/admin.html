@@ -82,29 +82,19 @@
         <div class="toolbar"><h2>Serviços AWS</h2><button class="btn btn-ghost btn-sm" id="refresh-health">Atualizar</button></div>
         <div class="aws-grid" id="aws-grid"></div>
 
-        <div class="toolbar"><h2>Teste de elasticidade (Parte 2)</h2></div>
+        <div class="toolbar"><h2>Elasticidade (Parte 2)</h2></div>
         <div class="stress-grid">
           <div class="panel">
-            <p class="sub" style="margin-bottom:14px">Gera carga de CPU pelo Load Balancer. Com a média acima de 70% por mais de 1 minuto, o Auto Scaling cria novas instâncias (máx. 3).</p>
-            <div class="grid-2">
-              <div class="field"><label for="stress-conc">Requisições simultâneas</label><input id="stress-conc" type="number" min="1" max="30" value="8" /></div>
-              <div class="field"><label for="stress-secs">Duração total (segundos)</label><input id="stress-secs" type="number" min="10" max="1800" value="300" /></div>
-            </div>
-            <div style="display:flex;gap:10px">
-              <button class="btn btn-primary" id="stress-start">⚡ Iniciar carga</button>
-              <button class="btn btn-danger" id="stress-stop" disabled>Parar</button>
-            </div>
-            <div class="stat-row">
-              <div class="stat"><b id="st-elapsed">0s</b><span>tempo</span></div>
-              <div class="stat"><b id="st-done">0</b><span>requisições OK</span></div>
-              <div class="stat"><b id="st-err">0</b><span>erros</span></div>
-              <div class="stat"><b id="st-hosts">0</b><span>instâncias vistas</span></div>
-            </div>
+            <h3 style="margin-top:0">Teste de carga com k6</h3>
+            <p class="sub" style="margin-bottom:12px">A carga é gerada pelo <b>k6</b>, fora do navegador, e produz um relatório com gráficos. Com a CPU média acima de 70% por mais de 1 minuto, o Auto Scaling cria novas instâncias (máx. 3). Veja o passo a passo em <code>loadtest/README.md</code>.</p>
+            <pre class="k6-cmd" id="k6-cmd"></pre>
+            <p class="sub" style="margin:12px 0 0">Acompanhe também o dashboard do CloudWatch (<code>terraform output cloudwatch_dashboard_url</code>).</p>
           </div>
           <div class="panel">
-            <h3 style="margin-top:0">Instâncias que responderam</h3>
-            <p class="sub" style="margin-bottom:12px">Hostnames vistos pelas respostas do ALB. Novas instâncias aparecem aqui quando o ASG escala.</p>
-            <ul class="host-list" id="host-list"><li><span>—</span><span>aguardando</span></li></ul>
+            <div class="toolbar" style="margin:0 0 6px"><h3 style="margin:0">Instâncias respondendo</h3>
+              <button class="btn btn-ghost btn-sm" id="monitor-toggle">▶ Monitorar</button></div>
+            <p class="sub" style="margin-bottom:12px">Consulta o /health pelo ALB a cada 2 s. Quando o ASG escala, novos hostnames aparecem aqui.</p>
+            <ul class="host-list" id="host-list"><li><span>—</span><span>parado</span></li></ul>
           </div>
         </div>
       </section>
@@ -126,11 +116,16 @@
             </select></div>
           <div class="field"><label for="f-date">Data e hora</label><input id="f-date" type="datetime-local" required /></div>
         </div>
-        <div class="grid-2">
-          <div class="field"><label for="f-price">Preço (R$)</label><input id="f-price" type="number" min="0" step="0.01" required /></div>
-          <div class="field"><label for="f-available">Ingressos disponíveis</label><input id="f-available" type="number" min="0" step="1" required /></div>
+        <div class="grid-2" id="create-stock">
+          <div class="field"><label for="f-price">Preço base (R$) — arquibancada</label><input id="f-price" type="number" min="0.01" step="0.01" /></div>
+          <div class="field"><label for="f-available">Capacidade total do estádio</label><input id="f-available" type="number" min="0" step="1" /></div>
         </div>
-        <div class="field"><label for="f-category">Setor</label><input id="f-category" placeholder="Arquibancada, Cadeira, Camarote..." /></div>
+        <small id="create-stock-hint" style="color:var(--muted);display:block;margin:-6px 0 12px">Os setores são criados automaticamente: Norte e Sul (preço base), Cadeira Central (1,75×) e Camarote (3,5×). Ajuste depois, um a um, na edição.</small>
+        <div class="field hidden" id="edit-sectors">
+          <label>Setores (preço e ingressos restantes)</label>
+          <table class="sectors-edit"><thead><tr><th>Setor</th><th>Preço (R$)</th><th>Restantes</th></tr></thead><tbody id="f-sectors"></tbody></table>
+        </div>
+        <div class="field"><label for="f-category">Categoria exibida na vitrine</label><input id="f-category" placeholder="Arquibancada, Cadeira, Camarote..." /></div>
         <div class="field"><label for="f-description">Descrição</label><textarea id="f-description" rows="2"></textarea></div>
         <div class="field"><label for="f-banner">Banner do jogo (imagem)</label><input id="f-banner" type="file" accept="image/*" />
           <small style="color:var(--muted)">O arquivo vai para o S3 e é redimensionado em segundo plano pelo worker (SQS).</small></div>

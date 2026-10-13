@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const { Pool } = require('pg');
 const { SCHEMA_FILE } = require('../config');
 const { seedEvents } = require('./seedEvents');
+const { buildSectors } = require('./sectorTemplate');
 
 // O RDS PostgreSQL 16 exige SSL por padrão (rds.force_ssl=1).
 function getPgSsl() {
@@ -70,6 +71,20 @@ async function ensureRelationalSchema() {
            ON CONFLICT (id) DO NOTHING`,
           [ev.id, ev.teamHome, ev.teamAway, ev.stadium, ev.date, ev.category, ev.price, ev.available,
             ev.description, ev.bannerUrl, ev.thumbnailUrl, ev.processingStatus || 'completed']
+        );
+      }
+    }
+    // Migração: jogos sem setores (criados antes desta versão) recebem os setores padrão,
+    // usando o preço e o estoque que o jogo tinha.
+    const withoutSectors = await client.query(
+      'SELECT id, price, available FROM events e WHERE NOT EXISTS (SELECT 1 FROM sectors s WHERE s.event_id = e.id)'
+    );
+    for (const ev of withoutSectors.rows) {
+      for (const s of buildSectors(ev.id, Number(ev.price), Number(ev.available))) {
+        await client.query(
+          `INSERT INTO sectors (id, event_id, code, name, price, capacity, available)
+           VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (id) DO NOTHING`,
+          [s.id, s.eventId, s.code, s.name, s.price, s.capacity, s.available]
         );
       }
     }

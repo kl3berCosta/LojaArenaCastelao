@@ -45,6 +45,12 @@ S3_BUCKET_NAME=${s3_bucket_name}
 DYNAMODB_TABLE_NAME=${dynamodb_table_name}
 SQS_QUEUE_URL=${sqs_queue_url}
 SNS_TOPIC_ARN=${sns_topic_arn}
+SNS_ORDER_EVENTS_TOPIC_ARN=${order_topic_arn}
+SQS_TICKETS_QUEUE_URL=${tickets_queue_url}
+SQS_NOTIFICATIONS_QUEUE_URL=${notify_queue_url}
+SNS_CUSTOMER_EMAIL_TOPIC_ARN=${email_topic_arn}
+APP_PUBLIC_URL=${app_public_url}
+METRICS_NAMESPACE=${metrics_namespace}
 ADMIN_PASSWORD=${admin_password}
 JWT_SECRET=${jwt_secret}
 EOF

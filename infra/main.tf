@@ -30,6 +30,8 @@ resource "random_id" "suffix" {
 locals {
   project_name = var.project_name
   bucket_name  = var.banners_bucket_name != "" ? var.banners_bucket_name : "${var.project_name}-banners-${random_id.suffix.hex}"
+  # Namespace das métricas de negócio publicadas pela aplicação no CloudWatch
+  metrics_namespace = "StadiumTickets"
   tags = {
     Project     = local.project_name
     Environment = var.environment
@@ -231,15 +233,28 @@ resource "aws_iam_policy" "app_permissions" {
           "sqs:GetQueueAttributes",
           "sqs:ChangeMessageVisibility"
         ]
-        Resource = aws_sqs_queue.banner_tasks.arn
+        Resource = concat([aws_sqs_queue.banner_tasks.arn], [for q in aws_sqs_queue.order_consumers : q.arn])
       },
       {
-        # A API publica no SNS (que entrega ao SQS). O envio direto ao SQS é o fallback do código.
+        # A API publica nos tópicos SNS (que entregam às filas SQS) e envia e-mails pelo tópico de clientes.
         Effect = "Allow"
         Action = [
           "sns:Publish"
         ]
-        Resource = aws_sns_topic.banner_tasks.arn
+        Resource = [aws_sns_topic.banner_tasks.arn, aws_sns_topic.order_events.arn, aws_sns_topic.customer_emails.arn]
+      },
+      {
+        # Assinatura do e-mail do cliente no tópico de notificações (com filtro pelo próprio e-mail)
+        Effect   = "Allow"
+        Action   = ["sns:Subscribe", "sns:ListSubscriptionsByTopic"]
+        Resource = aws_sns_topic.customer_emails.arn
+      },
+      {
+        # Métricas de negócio do dashboard (vendas, reservas, e-mails)
+        Effect    = "Allow"
+        Action    = ["cloudwatch:PutMetricData"]
+        Resource  = "*"
+        Condition = { StringEquals = { "cloudwatch:namespace" = local.metrics_namespace } }
       }
     ]
   })
@@ -401,6 +416,79 @@ resource "aws_sqs_queue_policy" "sqs_policy" {
       }
     }]
   })
+}
+
+# -------------------------------------------------------------------
+# SNS FAN-OUT: PEDIDO_CONFIRMADO -> fila do PDF do ingresso + fila do e-mail
+# -------------------------------------------------------------------
+# Um único evento publicado pela API chega a DOIS consumidores independentes. Se o envio de
+# e-mail falhar, o PDF continua sendo gerado (e vice-versa); cada fila tem a sua DLQ.
+locals {
+  order_consumers = {
+    tickets       = "Gera o PDF do ingresso com QR code e grava no S3"
+    notifications = "Envia o e-mail de confirmação ao cliente"
+  }
+}
+
+resource "aws_sns_topic" "order_events" {
+  name = "${local.project_name}-order-events"
+  tags = local.tags
+}
+
+resource "aws_sqs_queue" "order_consumers_dlq" {
+  for_each                  = local.order_consumers
+  name                      = "${local.project_name}-${each.key}-dlq"
+  message_retention_seconds = 1209600
+  tags                      = local.tags
+}
+
+resource "aws_sqs_queue" "order_consumers" {
+  for_each                   = local.order_consumers
+  name                       = "${local.project_name}-${each.key}-queue"
+  visibility_timeout_seconds = 180
+  message_retention_seconds  = 86400
+  receive_wait_time_seconds  = 5
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.order_consumers_dlq[each.key].arn
+    maxReceiveCount     = 5
+  })
+
+  tags = merge(local.tags, { Purpose = each.value })
+}
+
+resource "aws_sns_topic_subscription" "order_consumers" {
+  for_each             = local.order_consumers
+  topic_arn            = aws_sns_topic.order_events.arn
+  protocol             = "sqs"
+  endpoint             = aws_sqs_queue.order_consumers[each.key].arn
+  raw_message_delivery = true
+}
+
+resource "aws_sqs_queue_policy" "order_consumers" {
+  for_each  = local.order_consumers
+  queue_url = aws_sqs_queue.order_consumers[each.key].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "AllowOrderEvents"
+      Effect    = "Allow"
+      Principal = { Service = "sns.amazonaws.com" }
+      Action    = "sqs:SendMessage"
+      Resource  = aws_sqs_queue.order_consumers[each.key].arn
+      Condition = { ArnEquals = { "aws:SourceArn" = aws_sns_topic.order_events.arn } }
+    }]
+  })
+}
+
+# E-mail aos clientes. O Amazon SES é bloqueado no AWS Academy, então o e-mail sai por este tópico
+# SNS: cada cliente é assinado (protocolo email) com um filtro pelo próprio endereço, e cada
+# mensagem leva o atributo "email" do destinatário. As assinaturas são criadas pela aplicação
+# no cadastro do cliente (e confirmadas por ele no e-mail da AWS).
+resource "aws_sns_topic" "customer_emails" {
+  name = "${local.project_name}-customer-emails"
+  tags = local.tags
 }
 
 # -------------------------------------------------------------------
@@ -584,6 +672,12 @@ resource "aws_launch_template" "app" {
     dynamodb_table_name = aws_dynamodb_table.audit_logs.name
     sqs_queue_url       = aws_sqs_queue.banner_tasks.url
     sns_topic_arn       = aws_sns_topic.banner_tasks.arn
+    order_topic_arn     = aws_sns_topic.order_events.arn
+    tickets_queue_url   = aws_sqs_queue.order_consumers["tickets"].url
+    notify_queue_url    = aws_sqs_queue.order_consumers["notifications"].url
+    email_topic_arn     = aws_sns_topic.customer_emails.arn
+    app_public_url      = var.acm_certificate_arn != "" ? "https://${aws_lb.app.dns_name}" : "http://${aws_lb.app.dns_name}"
+    metrics_namespace   = local.metrics_namespace
     admin_password      = var.admin_password
     jwt_secret          = random_id.jwt.hex
   }))
@@ -616,6 +710,10 @@ resource "aws_autoscaling_group" "app" {
   # O user_data instala Node, dependências nativas (sharp) e sobe os serviços numa t3.micro:
   # precisa de folga para não ser terminada pelo health check do ELB antes de ficar pronta.
   health_check_grace_period = 600
+
+  # Métricas do grupo (instâncias em serviço, capacidade desejada) para o dashboard do CloudWatch
+  metrics_granularity = "1Minute"
+  enabled_metrics     = ["GroupInServiceInstances", "GroupDesiredCapacity", "GroupPendingInstances", "GroupTerminatingInstances"]
 
   launch_template {
     id      = aws_launch_template.app.id
@@ -689,4 +787,143 @@ resource "aws_cloudwatch_metric_alarm" "cpu_low" {
   dimensions = {
     AutoScalingGroupName = aws_autoscaling_group.app.name
   }
+}
+
+# -------------------------------------------------------------------
+# PARTE 2: DASHBOARD DO CLOUDWATCH (demonstração da elasticidade)
+# -------------------------------------------------------------------
+# Em uma tela: CPU do grupo com as linhas de 70% e 25%, número de instâncias, requisições e
+# latência no ALB, estado dos alarmes, filas e as métricas de negócio publicadas pela aplicação.
+locals {
+  asg_name  = aws_autoscaling_group.app.name
+  alb_dim   = aws_lb.app.arn_suffix
+  tg_dim    = aws_lb_target_group.app.arn_suffix
+  dash_name = "${local.project_name}-elasticidade"
+}
+
+resource "aws_cloudwatch_dashboard" "main" {
+  dashboard_name = local.dash_name
+
+  dashboard_body = jsonencode({
+    widgets = [
+      {
+        type = "text", x = 0, y = 0, width = 24, height = 2
+        properties = {
+          markdown = "# Loja de Ingressos - Elasticidade (Parte 2)\nCPU média do grupo **acima de 70%** por 1 min adiciona uma instância (máx. 3); **abaixo de 25%** remove uma (mín. 1)."
+        }
+      },
+      {
+        type = "metric", x = 0, y = 2, width = 12, height = 7
+        properties = {
+          title   = "CPU média do Auto Scaling Group (%)"
+          region  = var.aws_region
+          view    = "timeSeries"
+          stat    = "Average"
+          period  = 60
+          metrics = [["AWS/EC2", "CPUUtilization", "AutoScalingGroupName", local.asg_name, { label = "CPU média" }]]
+          yAxis   = { left = { min = 0, max = 100 } }
+          annotations = {
+            horizontal = [
+              { label = "Scale-out (70%)", value = 70, color = "#d62728" },
+              { label = "Scale-in (25%)", value = 25, color = "#2ca02c" }
+            ]
+          }
+        }
+      },
+      {
+        type = "metric", x = 12, y = 2, width = 12, height = 7
+        properties = {
+          title  = "Instâncias EC2 no grupo"
+          region = var.aws_region
+          view   = "timeSeries"
+          stat   = "Maximum"
+          period = 60
+          metrics = [
+            ["AWS/AutoScaling", "GroupInServiceInstances", "AutoScalingGroupName", local.asg_name, { label = "Em serviço" }],
+            [".", "GroupDesiredCapacity", ".", ".", { label = "Desejadas" }],
+            ["AWS/ApplicationELB", "HealthyHostCount", "TargetGroup", local.tg_dim, "LoadBalancer", local.alb_dim, { label = "Saudáveis no ALB" }]
+          ]
+          yAxis = { left = { min = 0, max = 4 } }
+        }
+      },
+      {
+        type = "metric", x = 0, y = 9, width = 12, height = 6
+        properties = {
+          title  = "Requisições no ALB (por minuto)"
+          region = var.aws_region
+          view   = "timeSeries"
+          stat   = "Sum"
+          period = 60
+          metrics = [
+            ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", local.alb_dim, { label = "Requisições" }],
+            [".", "HTTPCode_Target_5XX_Count", ".", ".", { label = "Erros 5xx" }]
+          ]
+        }
+      },
+      {
+        type = "metric", x = 12, y = 9, width = 12, height = 6
+        properties = {
+          title  = "Tempo de resposta no ALB (s)"
+          region = var.aws_region
+          view   = "timeSeries"
+          period = 60
+          metrics = [
+            ["AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", local.alb_dim, { stat = "Average", label = "Média" }],
+            ["...", { stat = "p95", label = "p95" }]
+          ]
+        }
+      },
+      {
+        type = "alarm", x = 0, y = 15, width = 12, height = 3
+        properties = {
+          title  = "Alarmes do Auto Scaling"
+          alarms = [aws_cloudwatch_metric_alarm.cpu_high.arn, aws_cloudwatch_metric_alarm.cpu_low.arn]
+        }
+      },
+      {
+        type = "metric", x = 12, y = 15, width = 12, height = 6
+        properties = {
+          title  = "Filas SQS (mensagens aguardando)"
+          region = var.aws_region
+          view   = "timeSeries"
+          stat   = "Maximum"
+          period = 60
+          metrics = [
+            ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", aws_sqs_queue.banner_tasks.name, { label = "Banners" }],
+            ["...", aws_sqs_queue.order_consumers["tickets"].name, { label = "PDF do ingresso" }],
+            ["...", aws_sqs_queue.order_consumers["notifications"].name, { label = "E-mails" }]
+          ]
+        }
+      },
+      {
+        type = "metric", x = 0, y = 18, width = 12, height = 6
+        properties = {
+          title  = "Vendas (métricas da aplicação)"
+          region = var.aws_region
+          view   = "timeSeries"
+          stat   = "Sum"
+          period = 60
+          metrics = [
+            [local.metrics_namespace, "TicketsSold", { label = "Ingressos vendidos" }],
+            [".", "Orders", { label = "Pedidos" }],
+            [".", "ReservationsCreated", { label = "Reservas" }],
+            [".", "EmailsSent", { label = "E-mails enviados" }]
+          ]
+        }
+      },
+      {
+        type = "metric", x = 12, y = 21, width = 12, height = 6
+        properties = {
+          title  = "Banco de dados (RDS)"
+          region = var.aws_region
+          view   = "timeSeries"
+          period = 60
+          metrics = [
+            ["AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", aws_db_instance.postgres.identifier, { stat = "Average", label = "CPU (%)" }],
+            [".", "DatabaseConnections", ".", ".", { stat = "Maximum", label = "Conexões", yAxis = "right" }]
+          ]
+        }
+      }
+    ]
+  })
 }

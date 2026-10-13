@@ -9,6 +9,16 @@ Trabalho Prático 1 da disciplina **Desenvolvimento de Software para Nuvem (UFC)
 
 Plataforma de alta disponibilidade e elasticidade na nuvem AWS para venda de ingressos de jogos de futebol, implementando controle atômico de concorrência, camada de cache distribuído em memória, processamento assíncrono de banners e auditoria completa em banco NoSQL.
 
+### Funcionalidades
+
+- **Setores com preço próprio** (Arquibancada Norte e Sul, Cadeira Central, Camarote) escolhidos num **mapa clicável do estádio**.
+- **Reserva temporária de 10 minutos** no checkout: os ingressos saem do estoque ao reservar e voltam sozinhos se a compra não for confirmada (cronômetro na tela).
+- **Ingresso em PDF com QR code assinado**, gerado em segundo plano e guardado de forma privada no S3 (download por link temporário).
+- **E-mail de confirmação** com o link do ingresso, enviado via **Amazon SNS** (o SES é bloqueado no AWS Academy).
+- **Meus ingressos**: cada torcedor vê só as próprias compras e baixa os PDFs.
+- **Painel admin** (acesso apenas pelo endereço `/admin.html`): CRUD de jogos e setores, pedidos, auditoria e monitor de instâncias.
+- **Elasticidade demonstrável**: teste de carga com **k6** (relatório com gráficos) e **dashboard do CloudWatch** com CPU, instâncias, requisições, filas e vendas.
+
 ---
 
 ## 🏛️ Arquitetura na Nuvem AWS
@@ -42,9 +52,14 @@ flowchart TD
     EC2_1 --> Redis
     EC2_1 --> S3
     EC2_1 --> Dynamo
-    EC2_1 -->|Publica tarefa| SNS
+    EC2_1 -->|Banner: publica tarefa| SNS
     SNS -->|Assinatura| SQS
-    EC2_1 -->|Worker consome fila| SQS
+    EC2_1 -->|Worker consome filas| SQS
+    EC2_1 -->|PEDIDO_CONFIRMADO| SNSO["📢 SNS order-events"]
+    SNSO -->|fan-out| QT["📬 SQS: PDF do ingresso"]
+    SNSO -->|fan-out| QN["📬 SQS: e-mail"]
+    QN -.->|Worker publica| SNSE["✉️ SNS e-mail do cliente"]
+    EC2_1 -.->|Métricas de vendas| CW
 ```
 
 ---
@@ -58,8 +73,8 @@ flowchart TD
 | **3. Arquivo Binário** | Amazon S3 | Armazenamento dos banners (`banners/raw/`) e thumbnails (`banners/processed/`). Só aceita imagens (JPEG/PNG/WEBP/GIF); leitura pública via bucket policy (sem ACL). O Terraform cria o bucket. |
 | **4. Cache em Memória** | Amazon ElastiCache (Redis) | Cache acelerador de alta frequência para a listagem de jogos e estoque disponível (`events:list`), invalidado a cada nova compra. |
 | **5. Auditoria NoSQL** | Amazon DynamoDB | Registro de todas as operações de CRUD (`CREATE`, `READ`, `UPDATE`, `DELETE`, `ORDER`, `RESCALE_BANNER_*`) com tipo de ação, dados manipulados e timestamp. Um índice (`by-time`) lista os registros mais recentes em ordem. |
-| **6. Desacoplamento Assíncrono** | Amazon SNS / SQS | Webservice grava o banner no S3, publica a tarefa no **tópico SNS** (entregue à **fila SQS**) e responde `201 Created` imediatamente. O rescaling com `sharp` é feito pelo **Worker** desacoplado (`worker.js`). Há **DLQ** para mensagens que falham repetidamente. |
-| **Parte 2: Elasticidade Horizontal** | ALB + Auto Scaling Group | Balanceador de carga à frente de 1 a 3 instâncias com regras de escalabilidade por CPU (>70% escala +1, <25% escala -1 por mais de 1 minuto). |
+| **6. Desacoplamento Assíncrono** | Amazon SNS / SQS | (a) **Banner**: a API grava a imagem no S3, publica no SNS (entregue ao SQS) e responde na hora; o **Worker** redimensiona com `sharp`. (b) **Compra**: a API publica um único evento `PEDIDO_CONFIRMADO` no SNS, que faz **fan-out** para duas filas SQS independentes — uma gera o **PDF com QR code** (S3 privado) e a outra envia o **e-mail** ao cliente (SNS e-mail). Cada fila tem **DLQ**. |
+| **Parte 2: Elasticidade Horizontal** | ALB + Auto Scaling Group + CloudWatch | Balanceador de carga à frente de 1 a 3 instâncias com regras de escalabilidade por CPU (>70% escala +1, <25% escala -1 por mais de 1 minuto). **Dashboard do CloudWatch** com CPU, instâncias, requisições, filas e métricas de vendas; carga gerada com **k6** (`loadtest/`). |
 
 ---
 
@@ -98,6 +113,9 @@ flowchart TD
 │   ├── user_data.sh.tpl     # Script de bootstrap automatizado para a EC2
 │   ├── terraform.tfvars.example # Exemplo de configuração
 │   └── README.md            # Documentação da infraestrutura e roteiro de gravação do vídeo
+├── loadtest/
+│   ├── k6-elasticidade.js   # Teste de carga da Parte 2 (k6), com relatório HTML
+│   └── README.md            # Como rodar o k6 e o que mostrar no vídeo
 ├── docker-compose.yml       # Ambiente local com PostgreSQL e Redis para testes
 └── README.md                # Este documento
 ```
@@ -147,7 +165,7 @@ Acesse a interface no navegador em: `http://localhost:3000`
 cd backend
 npm test
 ```
-*Executa 13 testes: rotas da API, healthcheck dos 6 serviços, autenticação, validações, upload só de imagens, compras concorrentes (nunca vende acima do estoque), "Meus ingressos" (cada usuário só vê os próprios), log de auditoria e processamento desacoplado do Worker. Os testes usam pastas temporárias e podem ser repetidos à vontade. Funcionam em modo local e também com `DATABASE_URL`/`REDIS_URL` apontando para Postgres/Redis reais.*
+*Executa 18 testes: rotas da API, healthcheck, autenticação, validações, upload só de imagens, compras concorrentes por setor (nunca vende acima do estoque), setores, reserva temporária (confirmação, cancelamento, expiração e limpeza pelo worker), PDF + e-mail via fan-out, "Meus ingressos" (cada usuário só vê os próprios), log de auditoria e processamento desacoplado do Worker. Os testes usam pastas temporárias e podem ser repetidos à vontade. Funcionam em modo local e também com `DATABASE_URL`/`REDIS_URL` apontando para Postgres/Redis reais.*
 
 ---
 
@@ -173,8 +191,8 @@ application_url = "http://stadium-tickets-alb-XXXXX.us-east-1.elb.amazonaws.com"
 ## 🎥 Demonstração da Parte 2 (Vídeo do Auto Scaling)
 
 A especificação do trabalho exige um vídeo demonstrando o Auto Scaling respondendo à carga:
-1. Acesse o painel `http://<URL-do-ALB>/admin.html` e entre com a senha de administrador.
-2. Na seção de **teste de carga**, defina as requisições simultâneas e a duração (ex.: 300s) e clique em **"⚡ Iniciar carga"** (a rota `/stress` é restrita ao admin).
+1. Abra o **dashboard do CloudWatch** (`terraform output cloudwatch_dashboard_url`) e o painel `http://<URL-do-ALB>/admin.html` → Infraestrutura → **Monitorar**.
+2. Rode o teste de carga com o **k6** (ver [loadtest/README.md](loadtest/README.md)): ele chama a rota `/stress` (restrita ao admin) e gera um relatório HTML com gráficos.
 3. No console da AWS, acompanhe:
    - A CPU média subindo acima de 70% por 1 minuto.
    - O alarme do **CloudWatch** disparando a política de Scale-Out.

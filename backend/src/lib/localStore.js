@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { DATA_DIR, DATA_FILE, QUEUE_FILE, UPLOADS_DIR } = require('../config');
 const { seedEvents } = require('./seedEvents');
+const { buildSectors } = require('./sectorTemplate');
 
 function ensureDirectories() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -13,7 +14,12 @@ function ensureDirectories() {
   if (!fs.existsSync(DATA_FILE)) {
     fs.writeFileSync(
       DATA_FILE,
-      JSON.stringify({ users: [], orders: [], events: seedEvents() }, null, 2),
+      JSON.stringify({
+        users: [],
+        orders: [],
+        reservations: [],
+        events: seedEvents().map((ev) => ({ ...ev, sectors: buildSectors(ev.id, ev.price, ev.available) }))
+      }, null, 2),
       'utf8'
     );
   }
@@ -30,9 +36,10 @@ function loadStore() {
     store.users = store.users || [];
     store.orders = store.orders || [];
     store.events = store.events || [];
+    store.reservations = store.reservations || [];
     return store;
   } catch (error) {
-    return { users: [], orders: [], events: [] };
+    return { users: [], orders: [], events: [], reservations: [] };
   }
 }
 

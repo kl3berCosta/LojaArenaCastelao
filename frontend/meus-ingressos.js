@@ -62,7 +62,7 @@ function ticketCard(o) {
     ? `<p class="ticket-time-line">📅 ${esc(formatDate(ev.date))} · ⏰ <strong>${esc(formatTime(ev.date))}</strong></p>`
     : '<p class="ticket-time-line">Este jogo não está mais em cartaz, mas o seu pedido continua registrado.</p>';
   const where = ev ? `<p class="ticket-stadium-line">🏟️ <strong>${esc(ev.stadium)}</strong></p>` : '';
-  const sector = ev ? `${esc(o.quantity)} × ${esc(ev.category)}` : `${esc(o.quantity)} ingresso(s)`;
+  const sector = `${esc(o.quantity)} × ${esc(o.sectorName || (ev && ev.category) || 'Ingresso')}`;
 
   return `
     <article class="ticket my-ticket">
@@ -81,9 +81,64 @@ function ticketCard(o) {
         <small>Código localizador</small>
         <div class="code">${esc(o.id)}</div>
         <small>${esc(o.quantity)} ingresso(s)</small>
-        <div class="ticket-qr-placeholder">⚽ QR CODE</div>
+        <button type="button" class="btn btn-primary btn-sm" data-pdf="${esc(o.id)}">⬇ PDF com QR code</button>
       </div>
     </article>`;
+}
+
+const authHeaders = () => ({ Authorization: `Bearer ${localStorage.getItem(TOKEN_KEY) || ''}` });
+
+// Baixa o PDF do ingresso; se o worker ainda estiver gerando, tenta de novo por alguns segundos
+async function downloadTicket(orderId, button) {
+  const original = button.textContent;
+  button.disabled = true;
+  try {
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const res = await fetch(`${API}/orders/${encodeURIComponent(orderId)}/ticket`, { headers: authHeaders() });
+      const body = await res.json().catch(() => ({}));
+      if (res.status === 200 && body.downloadUrl) {
+        window.open(body.downloadUrl, '_blank', 'noopener');
+        return;
+      }
+      if (res.status !== 202) throw new Error(body.message || 'Não foi possível baixar o ingresso.');
+      button.textContent = 'Gerando...';
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+    throw new Error('O PDF ainda está sendo gerado. Tente novamente em instantes.');
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+// Notificações por e-mail (SNS): mostra o estado e permite ativar / reenviar a confirmação
+async function renderEmailCard() {
+  const card = $('email-card');
+  try {
+    const res = await fetch(`${API}/users/me/email-notifications`, { headers: authHeaders() });
+    if (!res.ok) return;
+    const { status } = await res.json();
+    const texts = {
+      confirmed: '📧 Notificações por e-mail <strong>ativas</strong>: cada compra chega na sua caixa de entrada com o link do PDF.',
+      pending: '📧 Falta confirmar: abra o e-mail <strong>“AWS Notification - Subscription Confirmation”</strong> (veja o spam) e clique em <em>Confirm subscription</em>.',
+      none: '📧 Receba seus ingressos por e-mail a cada compra.',
+      local: '📧 Ambiente local: os e-mails são gravados em <code>backend/data/outbox</code>.'
+    };
+    const action = status === 'pending' ? 'Reenviar confirmação' : status === 'none' ? 'Ativar e-mails' : '';
+    card.innerHTML = `${texts[status] || texts.none}${action ? ` <button type="button" class="btn btn-ghost btn-sm" id="email-subscribe">${action}</button>` : ''}`;
+    card.classList.remove('hidden');
+    const btn = $('email-subscribe');
+    if (btn) {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        const r = await fetch(`${API}/users/me/email-notifications`, { method: 'POST', headers: authHeaders() });
+        const body = await r.json().catch(() => ({}));
+        card.innerHTML = `📧 ${esc(body.message || 'Pronto! Verifique sua caixa de entrada.')}`;
+      });
+    }
+  } catch (e) { /* cartão opcional */ }
 }
 
 function renderSummary(orders) {
@@ -103,6 +158,7 @@ async function load() {
   if (!token) return showLoginRequired();
 
   $('my-area').classList.remove('hidden');
+  renderEmailCard();
   try {
     const res = await fetch(`${API}/orders/mine`, { headers: { Authorization: `Bearer ${token}` } });
     if (res.status === 401) {
@@ -122,6 +178,7 @@ async function load() {
     }
     renderSummary(body);
     $('tickets').innerHTML = body.map(ticketCard).join('');
+    document.querySelectorAll('[data-pdf]').forEach((b) => b.addEventListener('click', () => downloadTicket(b.dataset.pdf, b)));
   } catch (e) {
     $('loading').classList.add('hidden');
     $('error').textContent = e.message;

@@ -6,3 +6,7 @@ node_modules/
 especificacao.txt
 backend/uploads/
 backend/data/
+
+# Saídas do teste de carga (k6)
+loadtest/relatorio-k6.html
+loadtest/resumo-k6.json

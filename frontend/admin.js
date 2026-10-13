@@ -127,8 +127,23 @@ function openForm(id) {
   }
   sel.value = g?.stadium || 'Arena Castelão';
   $('f-date').value = g ? toLocalInput(g.date) : '';
-  $('f-price').value = g?.price ?? '';
-  $('f-available').value = g?.available ?? '';
+  $('f-price').value = '';
+  $('f-available').value = '';
+  // Criação: preço base + capacidade (setores automáticos). Edição: preço e estoque de cada setor.
+  $('create-stock').classList.toggle('hidden', !!g);
+  $('create-stock-hint').classList.toggle('hidden', !!g);
+  $('edit-sectors').classList.toggle('hidden', !g);
+  $('f-price').required = !g;
+  $('f-available').required = !g;
+  $('f-sectors').innerHTML = '';
+  if (g) {
+    api(`/events/${encodeURIComponent(g.id)}`).then((full) => {
+      $('f-sectors').innerHTML = (full.sectors || []).map((s) => `<tr data-sector-id="${esc(s.id)}">
+        <td>${esc(s.name)}</td>
+        <td><input type="number" min="0.01" step="0.01" value="${esc(s.price)}" data-field="price" /></td>
+        <td><input type="number" min="0" step="1" value="${esc(s.available)}" data-field="available" /></td></tr>`).join('');
+    }).catch((e) => toast(e.message));
+  }
   $('f-category').value = g?.category || 'Arquibancada';
   $('f-description').value = g?.description || '';
   $('f-banner').value = '';
@@ -152,8 +167,17 @@ $('game-form').addEventListener('submit', async (e) => {
     fd.append('teamAway', $('f-away').value.trim());
     fd.append('stadium', $('f-stadium').value);
     fd.append('date', new Date($('f-date').value).toISOString());
-    fd.append('price', $('f-price').value);
-    fd.append('available', $('f-available').value);
+    if (editingId) {
+      const sectors = [...document.querySelectorAll('#f-sectors tr')].map((tr) => ({
+        id: tr.dataset.sectorId,
+        price: tr.querySelector('[data-field="price"]').value,
+        available: tr.querySelector('[data-field="available"]').value
+      }));
+      if (sectors.length) fd.append('sectors', JSON.stringify(sectors));
+    } else {
+      fd.append('price', $('f-price').value);
+      fd.append('available', $('f-available').value);
+    }
     fd.append('category', $('f-category').value.trim() || 'Arquibancada');
     fd.append('description', $('f-description').value.trim());
     const file = $('f-banner').files[0];
@@ -228,7 +252,6 @@ const hostsSeen = new Map();
 function seeHost(name) {
   if (!name) return;
   hostsSeen.set(name, (hostsSeen.get(name) || 0) + 1);
-  $('st-hosts').textContent = hostsSeen.size;
   $('host-list').innerHTML = [...hostsSeen.entries()]
     .map(([h, n]) => `<li><span>${esc(h)}</span><span>${n} resp.</span></li>`).join('');
 }
@@ -245,7 +268,10 @@ async function loadHealth() {
       ['⚡', 'ElastiCache Redis', svc.elasticache],
       ['🪣', 'S3 (banners)', svc.s3],
       ['📝', 'DynamoDB (auditoria)', svc.dynamodb],
-      ['📬', 'SQS / SNS', svc.sqsSns]
+      ['📬', 'SQS / SNS (banners)', svc.sqsSns],
+      ['🔀', 'SNS fan-out (PDF + e-mail)', svc.orderFanout],
+      ['✉️', 'E-mail via SNS', svc.emailSns],
+      ['📈', 'CloudWatch (métricas)', svc.cloudwatchMetrics]
     ];
     $('aws-grid').innerHTML = cards.map(([ico, name, ok, extra]) => `<div class="aws-card">
       <div class="ico">${ico}</div><h4>${esc(name)}</h4>
@@ -254,57 +280,34 @@ async function loadHealth() {
 }
 $('refresh-health').addEventListener('click', loadHealth);
 
-/* ---------- Teste de carga ---------- */
-let stress = null;
+/* ---------- Elasticidade: comando do k6 e monitor de instâncias ---------- */
+$('k6-cmd').textContent = [
+  'cd loadtest',
+  `BASE_URL=${window.location.origin} ADMIN_PASSWORD='sua-senha' \\`,
+  '  K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=relatorio-k6.html \\',
+  '  k6 run k6-elasticidade.js'
+].join('\n');
 
-function startStress() {
-  if (stress) return;
-  const conc = Math.max(1, Math.min(30, Number($('stress-conc').value) || 8));
-  const secs = Math.max(10, Math.min(1800, Number($('stress-secs').value) || 300));
-  const s = { stop: false, done: 0, err: 0, t0: Date.now(), secs };
-  stress = s;
-  $('stress-start').disabled = true;
-  $('stress-stop').disabled = false;
-  $('st-done').textContent = '0';
-  $('st-err').textContent = '0';
-
-  const worker = async () => {
-    while (!s.stop && (Date.now() - s.t0) / 1000 < secs) {
-      try {
-        const res = await fetch(`${API}/stress?duration=4000`, {
-          headers: { Authorization: `Bearer ${sessionStorage.getItem(TOKEN_KEY) || ''}` }
-        });
-        const body = await res.json();
-        if (!res.ok) throw new Error('http');
-        s.done++;
-        seeHost(body.instance);
-      } catch (_) {
-        s.err++;
-        await new Promise((r) => setTimeout(r, 500));
-      }
-      $('st-done').textContent = s.done;
-      $('st-err').textContent = s.err;
-    }
-  };
-  s.workers = Promise.all(Array.from({ length: conc }, worker)).then(() => { if (stress === s) stopStress(); });
-  s.timer = setInterval(() => {
-    $('st-elapsed').textContent = `${Math.round((Date.now() - s.t0) / 1000)}s`;
-  }, 500);
-  s.health = setInterval(loadHealth, 4000);
+let monitor = null;
+function toggleMonitor() {
+  if (monitor) {
+    clearInterval(monitor);
+    monitor = null;
+    $('monitor-toggle').textContent = '▶ Monitorar';
+    return;
+  }
+  hostsSeen.clear();
+  $('host-list').innerHTML = '<li><span>—</span><span>aguardando respostas</span></li>';
+  $('monitor-toggle').textContent = '■ Parar';
+  monitor = setInterval(async () => {
+    try {
+      const res = await fetch(`${API}/health`, { cache: 'no-store' });
+      const h = await res.json();
+      seeHost(h.instance?.hostname);
+    } catch (e) { /* ALB trocando instância: ignora */ }
+  }, 2000);
 }
-
-function stopStress() {
-  if (!stress) return;
-  stress.stop = true;
-  clearInterval(stress.timer);
-  clearInterval(stress.health);
-  stress = null;
-  $('stress-start').disabled = false;
-  $('stress-stop').disabled = true;
-}
-
-$('stress-start').addEventListener('click', startStress);
-$('stress-stop').addEventListener('click', stopStress);
+$('monitor-toggle').addEventListener('click', toggleMonitor);
 
 /* ---------- Início ---------- */
 if (sessionStorage.getItem(TOKEN_KEY)) {

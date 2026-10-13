@@ -604,3 +604,50 @@ pre.json { margin: 8px 0 0; padding: 10px; background: #f7f9fe; border-radius: 8
   .my-ticket { flex-direction: column; }
   .my-ticket .ticket-stub { width: 100%; border-left: 0; border-top: 3px dashed #cdd6e8; }
 }
+
+/* Mapa do estádio e setores (checkout) */
+.stadium-map { background: #f3f7f1; border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; margin-bottom: 14px; }
+.stadium-map svg { width: 100%; height: auto; display: block; }
+.map-field { fill: #2f9e4f; stroke: #ffffff; stroke-width: 2; }
+.map-line { fill: none; stroke: rgba(255,255,255,0.85); stroke-width: 2; }
+.map-sector { cursor: pointer; outline: none; }
+.map-sector rect { fill: #dbe5f7; stroke: var(--navy-2); stroke-width: 1.5; transition: fill .15s; }
+.map-sector:hover rect, .map-sector:focus rect { fill: #ffd2ad; }
+.map-sector.selected rect { fill: var(--sun); stroke: #b8520a; stroke-width: 2.5; }
+.map-sector.soldout { cursor: not-allowed; }
+.map-sector.soldout rect { fill: #e2e4ea; stroke: #b9bfcc; stroke-dasharray: 4 3; }
+.map-sector text { text-anchor: middle; pointer-events: none; font-family: inherit; }
+.map-name { font-size: 12px; font-weight: 800; fill: var(--navy); }
+.map-price { font-size: 11px; font-weight: 700; fill: var(--navy-2); }
+.map-sector.selected .map-name, .map-sector.selected .map-price { fill: #fff; }
+.map-sector.soldout .map-name, .map-sector.soldout .map-price { fill: #8a91a3; }
+
+.sector-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-bottom: 18px; }
+.sector-card {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left;
+  border: 1.5px solid var(--line); border-radius: var(--radius-sm); background: #fff; padding: 10px 12px; cursor: pointer;
+  font: inherit; color: var(--text); transition: border-color .15s, box-shadow .15s;
+}
+.sector-card:hover { border-color: var(--sun); }
+.sector-card.selected { border-color: var(--sun); box-shadow: 0 0 0 3px rgba(255,122,26,0.18); background: var(--sun-light); }
+.sector-card:disabled { opacity: .55; cursor: not-allowed; }
+.sector-name { font-weight: 800; color: var(--navy); font-size: .92rem; }
+.sector-price { font-weight: 800; color: var(--sun); }
+.sector-stock { font-size: .78rem; color: var(--muted); font-weight: 600; }
+
+.reservation-timer {
+  margin: 0 0 18px; padding: 12px 16px; border-radius: 12px; font-weight: 600;
+  background: #eaf2ff; color: var(--navy-2); border: 1px solid #cfdef8;
+}
+.reservation-timer strong { font-variant-numeric: tabular-nums; font-size: 1.1rem; }
+.reservation-timer.urgent { background: #fff1e0; color: #a64a00; border-color: #ffd2ad; }
+.reservation-timer.expired { background: var(--red-light); color: var(--red); border-color: #f8c9cf; }
+.ticket-delivery { max-width: 660px; margin: 0 auto 8px; }
+
+/* Utilitários do painel admin */
+.btn-sm { padding: 6px 12px; font-size: .82rem; border-radius: 8px; }
+.k6-cmd { background: var(--navy); color: #e1ebff; padding: 14px 16px; border-radius: 10px; font-size: .8rem; overflow-x: auto; white-space: pre; margin: 0; }
+.sectors-edit { width: 100%; border-collapse: collapse; margin-top: 6px; }
+.sectors-edit th { text-align: left; font-size: .78rem; color: var(--muted); padding: 4px 6px; }
+.sectors-edit td { padding: 4px 6px; }
+.sectors-edit input { width: 100%; }

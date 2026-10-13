@@ -1,75 +1,107 @@
 // MODEL de pedidos: compra com controle de concorrência no RDS (ou store local em desenvolvimento).
+// Há dois caminhos:
+//  - purchaseReservation: confirma uma reserva do checkout (o estoque já foi separado ao reservar);
+//  - purchase: compra direta num setor (API, testes e teste de carga), com baixa atômica do estoque.
 const crypto = require('node:crypto');
 const db = require('../../lib/db');
 const { loadStore, saveStore } = require('../../lib/localStore');
+const { localRelease } = require('../reservations/reservation.model');
 
 function rowToOrder(row) {
   return {
     id: row.id,
     eventId: row.event_id,
     eventName: row.event_name,
+    sectorId: row.sector_id || null,
+    sectorName: row.sector_name || null,
     customerName: row.customer_name,
     customerEmail: row.customer_email,
     quantity: row.quantity,
+    unitPrice: row.unit_price != null ? Number(row.unit_price) : null,
     total: Number(row.total),
     status: row.status,
+    ticketStatus: row.ticket_status || 'pending',
     createdAt: row.created_at
   };
 }
 
-// Compra atômica: o UPDATE condicional e a trava de linha serializam compradores simultâneos do
-// mesmo jogo, então nunca se vende mais do que o estoque.
+const newOrderId = () => `order-${crypto.randomUUID()}`;
+
+async function insertOrder(client, o) {
+  await client.query(
+    `INSERT INTO orders (id, event_id, event_name, sector_id, sector_name, unit_price, customer_name, customer_email,
+                         quantity, total, status, ticket_status, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'confirmed', 'pending', NOW())`,
+    [o.id, o.eventId, o.eventName, o.sectorId, o.sectorName, o.unitPrice, o.customerName, o.customerEmail, o.quantity, o.total]
+  );
+}
+
+function buildOrder({ eventId, eventName, sector, quantity, customerName, customerEmail }) {
+  const unitPrice = Number(sector.price);
+  return {
+    id: newOrderId(),
+    eventId,
+    eventName,
+    sectorId: sector.id,
+    sectorName: sector.name,
+    unitPrice,
+    customerName,
+    customerEmail,
+    quantity,
+    total: Math.round(unitPrice * quantity * 100) / 100,
+    status: 'confirmed',
+    ticketStatus: 'pending',
+    createdAt: new Date().toISOString()
+  };
+}
+
+// Compra direta: baixa atômica no setor informado (ou no setor mais barato, se nenhum for informado).
+// O UPDATE condicional e a trava de linha serializam compradores simultâneos: nunca vende além do estoque.
 // Retorna { success, order } ou { success: false, notFound?, reason }.
-async function purchase(eventId, quantity, customerName, customerEmail) {
+async function purchase({ eventId, sectorId, quantity, customerName, customerEmail }) {
   const pool = db.getPool();
   if (pool) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      const updateResult = await client.query(
-        `UPDATE events
-         SET available = available - $1, updated_at = NOW()
-         WHERE id = $2 AND available >= $1
-         RETURNING *`,
-        [quantity, eventId]
-      );
-
-      if (updateResult.rows.length === 0) {
-        await client.query('ROLLBACK');
-        const exists = await client.query('SELECT 1 FROM events WHERE id = $1', [eventId]);
-        if (exists.rows.length === 0) {
-          return { success: false, notFound: true, reason: 'Evento não encontrado.' };
-        }
-        return { success: false, reason: 'Ingressos esgotados ou saldo insuficiente.' };
+      let targetSector = sectorId;
+      if (!targetSector) {
+        const cheapest = await client.query(
+          'SELECT id FROM sectors WHERE event_id = $1 ORDER BY price ASC, code ASC LIMIT 1',
+          [eventId]
+        );
+        targetSector = cheapest.rows[0]?.id;
       }
 
-      const eventRow = updateResult.rows[0];
-      const total = Number(eventRow.price) * quantity;
-      const orderId = `order-${crypto.randomUUID()}`;
-      const eventName = `${eventRow.team_home} x ${eventRow.team_away}`;
+      const updated = targetSector
+        ? await client.query(
+          `UPDATE sectors SET available = available - $1
+           WHERE id = $2 AND event_id = $3 AND available >= $1
+           RETURNING *`,
+          [quantity, targetSector, eventId]
+        )
+        : { rows: [] };
 
-      await client.query(
-        `INSERT INTO orders (id, event_id, event_name, customer_name, customer_email, quantity, total, status, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'confirmed', NOW())`,
-        [orderId, eventId, eventName, customerName, customerEmail, quantity, total]
-      );
+      if (updated.rows.length === 0) {
+        await client.query('ROLLBACK');
+        const exists = await pool.query('SELECT 1 FROM sectors WHERE id = $1 AND event_id = $2', [targetSector || '', eventId]);
+        if (!exists.rows.length) return { success: false, notFound: true, reason: 'Jogo ou setor não encontrado.' };
+        return { success: false, reason: 'Ingressos esgotados ou saldo insuficiente neste setor.' };
+      }
 
+      const ev = await client.query('SELECT team_home, team_away FROM events WHERE id = $1', [eventId]);
+      const order = buildOrder({
+        eventId,
+        eventName: `${ev.rows[0].team_home} x ${ev.rows[0].team_away}`,
+        sector: updated.rows[0],
+        quantity,
+        customerName,
+        customerEmail
+      });
+      await insertOrder(client, order);
+      await client.query('UPDATE events SET updated_at = NOW() WHERE id = $1', [eventId]);
       await client.query('COMMIT');
-
-      return {
-        success: true,
-        order: {
-          id: orderId,
-          eventId,
-          eventName,
-          customerName,
-          customerEmail,
-          quantity,
-          total,
-          status: 'confirmed',
-          createdAt: new Date().toISOString()
-        }
-      };
+      return { success: true, order };
     } catch (err) {
       await client.query('ROLLBACK').catch(() => {});
       throw err;
@@ -81,25 +113,104 @@ async function purchase(eventId, quantity, customerName, customerEmail) {
   // Modo desenvolvimento (sem RDS): store.json
   const store = loadStore();
   const event = store.events.find((e) => e.id === eventId);
-  if (!event) return { success: false, notFound: true, reason: 'Evento não encontrado.' };
-  if (event.available < quantity) return { success: false, reason: 'Ingressos esgotados ou saldo insuficiente.' };
+  const sectors = event ? [...(event.sectors || [])] : [];
+  const sector = sectorId
+    ? sectors.find((s) => s.id === sectorId)
+    : sectors.sort((a, b) => a.price - b.price || a.code.localeCompare(b.code))[0];
+  if (!event || !sector) return { success: false, notFound: true, reason: 'Jogo ou setor não encontrado.' };
+  if (sector.available < quantity) return { success: false, reason: 'Ingressos esgotados ou saldo insuficiente neste setor.' };
 
-  const order = {
-    id: `order-${crypto.randomUUID()}`,
-    eventId,
-    eventName: `${event.teamHome} x ${event.teamAway}`,
-    customerName,
-    customerEmail,
-    quantity,
-    total: Number(event.price) * quantity,
-    status: 'confirmed',
-    createdAt: new Date().toISOString()
-  };
-
-  event.available -= quantity;
+  sector.available -= quantity;
+  const order = buildOrder({
+    eventId, eventName: `${event.teamHome} x ${event.teamAway}`, sector, quantity, customerName, customerEmail
+  });
   store.orders.unshift(order);
   saveStore(store);
+  return { success: true, order };
+}
 
+// Confirma a reserva do checkout. Só o dono da reserva pode confirmá-la, e só dentro do prazo.
+// Retorna { success, order } ou { success: false, code: 404|409|410, reason }.
+async function purchaseReservation({ reservationId, customerName, customerEmail }) {
+  const pool = db.getPool();
+  if (pool) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const found = await client.query(
+        `SELECT r.*, (r.expires_at < NOW()) AS is_expired, s.name AS sector_name, s.price AS sector_price,
+                e.team_home, e.team_away
+         FROM reservations r
+         JOIN sectors s ON s.id = r.sector_id
+         JOIN events e ON e.id = r.event_id
+         WHERE r.id = $1 AND r.customer_email = $2
+         FOR UPDATE OF r`,
+        [reservationId, customerEmail]
+      );
+      const r = found.rows[0];
+      if (!r) {
+        await client.query('ROLLBACK');
+        return { success: false, code: 404, reason: 'Reserva não encontrada.' };
+      }
+      if (r.status !== 'active') {
+        await client.query('ROLLBACK');
+        return r.status === 'expired'
+          ? { success: false, code: 410, reason: 'Sua reserva expirou. Escolha os ingressos novamente.' }
+          : { success: false, code: 409, reason: 'Esta reserva já foi usada ou cancelada.' };
+      }
+      if (r.is_expired) {
+        // Venceu e a limpeza ainda não passou: devolve o estoque agora mesmo
+        await client.query("UPDATE reservations SET status = 'expired' WHERE id = $1", [r.id]);
+        await client.query('UPDATE sectors SET available = available + $1 WHERE id = $2', [r.quantity, r.sector_id]);
+        await client.query('COMMIT');
+        return { success: false, code: 410, reason: 'Sua reserva expirou. Escolha os ingressos novamente.', releasedEventId: r.event_id };
+      }
+
+      const order = buildOrder({
+        eventId: r.event_id,
+        eventName: `${r.team_home} x ${r.team_away}`,
+        sector: { id: r.sector_id, name: r.sector_name, price: r.unit_price },
+        quantity: Number(r.quantity),
+        customerName,
+        customerEmail
+      });
+      await client.query("UPDATE reservations SET status = 'converted' WHERE id = $1", [r.id]);
+      await insertOrder(client, order);
+      await client.query('COMMIT');
+      return { success: true, order };
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  const store = loadStore();
+  const r = store.reservations.find((x) => x.id === reservationId && x.customerEmail === customerEmail);
+  if (!r) return { success: false, code: 404, reason: 'Reserva não encontrada.' };
+  if (r.status === 'active' && new Date(r.expiresAt).getTime() < Date.now()) {
+    localRelease(store, 'expired', (x) => x.id === r.id);
+    saveStore(store);
+    return { success: false, code: 410, reason: 'Sua reserva expirou. Escolha os ingressos novamente.', releasedEventId: r.eventId };
+  }
+  if (r.status !== 'active') {
+    return r.status === 'expired'
+      ? { success: false, code: 410, reason: 'Sua reserva expirou. Escolha os ingressos novamente.' }
+      : { success: false, code: 409, reason: 'Esta reserva já foi usada ou cancelada.' };
+  }
+  const event = store.events.find((e) => e.id === r.eventId);
+  const order = buildOrder({
+    eventId: r.eventId,
+    eventName: event ? `${event.teamHome} x ${event.teamAway}` : 'Jogo',
+    sector: { id: r.sectorId, name: r.sectorName, price: r.unitPrice },
+    quantity: r.quantity,
+    customerName,
+    customerEmail
+  });
+  r.status = 'converted';
+  store.orders.unshift(order);
+  saveStore(store);
   return { success: true, order };
 }
 
@@ -110,6 +221,30 @@ async function findAll() {
     return result.rows.map(rowToOrder);
   }
   return loadStore().orders;
+}
+
+async function findById(id) {
+  const pool = db.getPool();
+  if (pool) {
+    const result = await pool.query('SELECT * FROM orders WHERE id = $1', [id]);
+    return result.rows.length ? rowToOrder(result.rows[0]) : null;
+  }
+  return loadStore().orders.find((o) => o.id === id) || null;
+}
+
+// Marcado pelo worker quando o PDF do ingresso fica pronto no S3
+async function setTicketStatus(id, status) {
+  const pool = db.getPool();
+  if (pool) {
+    await pool.query('UPDATE orders SET ticket_status = $1 WHERE id = $2', [status, id]);
+    return;
+  }
+  const store = loadStore();
+  const o = store.orders.find((x) => x.id === id);
+  if (o) {
+    o.ticketStatus = status;
+    saveStore(store);
+  }
 }
 
 // Ingressos de um cliente (pelo e-mail do token), do mais recente ao mais antigo, com os dados do jogo.
@@ -164,4 +299,4 @@ async function findByCustomer(email) {
     });
 }
 
-module.exports = { purchase, findAll, findByCustomer };
+module.exports = { purchase, purchaseReservation, findAll, findById, setTicketStatus, findByCustomer };

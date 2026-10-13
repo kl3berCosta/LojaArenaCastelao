@@ -164,25 +164,30 @@ test('Compras concorrentes nunca vendem mais do que o estoque e geram pedidos di
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      teamHome: 'A', teamAway: 'B', stadium: 'Arena Castelão', date: '2026-12-01T16:00:00', price: 10, available: 5
+      teamHome: 'A', teamAway: 'B', stadium: 'Arena Castelão', date: '2026-12-01T16:00:00', price: 10, available: 20
     })
   });
   const eventId = created.body.event.id;
+  const sector = created.body.event.sectors.find((x) => x.code === 'norte');
+  const stock = sector.available;
+  assert.ok(stock > 0 && stock < 12, 'o setor precisa de menos ingressos do que compradores');
   const token = await getUserToken();
 
   const results = await Promise.all(Array.from({ length: 12 }, () => fetchJson('/orders', {
     method: 'POST',
     headers: authJson(token),
-    body: JSON.stringify({ eventId, quantity: 1 })
+    body: JSON.stringify({ eventId, sectorId: sector.id, quantity: 1 })
   })));
 
   const ok = results.filter((r) => r.status === 201);
-  assert.equal(ok.length, 5);
-  assert.equal(results.filter((r) => r.status === 409).length, 7);
-  assert.equal(new Set(ok.map((r) => r.body.order.id)).size, 5, 'ids de pedido devem ser únicos');
+  assert.equal(ok.length, stock);
+  assert.equal(results.filter((r) => r.status === 409).length, 12 - stock);
+  assert.equal(new Set(ok.map((r) => r.body.order.id)).size, stock, 'ids de pedido devem ser únicos');
+  assert.ok(ok.every((r) => r.body.order.sectorName === 'Arquibancada Norte'));
 
   const after = await fetchJson(`/events/${eventId}`);
-  assert.equal(after.body.available, 0);
+  assert.equal(after.body.sectors.find((x) => x.code === 'norte').available, 0);
+  assert.equal(after.body.available, 20 - stock, 'os outros setores não são afetados');
 });
 
 test('POST/PUT /events validam entrada e PUT ignora campos fora da lista permitida', async () => {
@@ -200,16 +205,29 @@ test('POST/PUT /events validam entrada e PUT ignora campos fora da lista permiti
   });
   const id = created.body.event.id;
 
+  const sectors = created.body.event.sectors;
+  assert.equal(sectors.length, 4, 'jogo novo ganha os 4 setores padrão');
   const put = await fetchJson(`/events/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id: 'sequestrado', price: 25, available: 0, processingStatus: 'hack' })
+    body: JSON.stringify({
+      id: 'sequestrado',
+      processingStatus: 'hack',
+      sectors: sectors.map((x) => ({ id: x.id, price: x.code === 'norte' ? 15 : x.price, available: 0 }))
+    })
   });
   assert.equal(put.status, 200);
   assert.equal(put.body.event.id, id);
-  assert.equal(put.body.event.price, 25);
-  assert.equal(put.body.event.available, 0);
+  assert.equal(put.body.event.price, 15, 'o preço do jogo é o menor preço entre os setores');
+  assert.equal(put.body.event.available, 0, 'o estoque do jogo é a soma dos setores');
   assert.notEqual(put.body.event.processingStatus, 'hack');
+
+  const foreign = await fetchJson(`/events/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sectors: [{ id: 'match-1-norte', available: 999 }] })
+  });
+  assert.equal(foreign.status, 400, 'não pode editar setor de outro jogo');
 
   const badPut = await fetchJson(`/events/${id}`, {
     method: 'PUT',
@@ -317,6 +335,186 @@ test('GET /orders/mine mostra só os ingressos do próprio usuário', async () =
   const mine2 = await fetchJson('/orders/mine', { headers: authJson(ana) });
   assert.equal(mine2.body.length, 2);
   assert.equal(mine2.body[0].id, buy2.body.order.id);
+});
+
+test('GET /events/:id traz os setores com preço e estoque próprios', async () => {
+  const res = await fetchJson('/events/match-1');
+  assert.equal(res.status, 200);
+  const codes = res.body.sectors.map((x) => x.code);
+  assert.deepEqual(codes, ['norte', 'sul', 'central', 'camarote']);
+  const camarote = res.body.sectors.find((x) => x.code === 'camarote');
+  const norte = res.body.sectors.find((x) => x.code === 'norte');
+  assert.ok(camarote.price > norte.price, 'camarote é mais caro que a arquibancada');
+  assert.equal(res.body.price, Math.min(...res.body.sectors.map((x) => x.price)));
+});
+
+async function newEventWithStock(available = 40) {
+  const res = await fetchJson('/events', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ teamHome: 'Res', teamAway: 'Erva', stadium: 'Arena Castelão', date: '2026-12-20T16:00:00', price: 30, available })
+  });
+  return res.body.event;
+}
+const sectorAvailable = async (eventId, code) =>
+  (await fetchJson(`/events/${eventId}`)).body.sectors.find((x) => x.code === code).available;
+
+test('Reserva temporária separa o estoque e a confirmação vira pedido', async () => {
+  const ev = await newEventWithStock();
+  const central = ev.sectors.find((x) => x.code === 'central');
+  const token = await getUserToken();
+
+  const anon = await fetchJson('/reservations', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ eventId: ev.id, sectorId: central.id, quantity: 2 })
+  });
+  assert.equal(anon.status, 401);
+
+  const resv = await fetchJson('/reservations', {
+    method: 'POST', headers: authJson(token),
+    body: JSON.stringify({ eventId: ev.id, sectorId: central.id, quantity: 2 })
+  });
+  assert.equal(resv.status, 201);
+  assert.ok(resv.body.reservation.expiresAt);
+  assert.equal(resv.body.reservation.total, central.price * 2);
+  assert.equal(await sectorAvailable(ev.id, 'central'), central.available - 2, 'reservar tira do estoque');
+
+  // Uma nova reserva do mesmo cliente libera a anterior
+  const resv2 = await fetchJson('/reservations', {
+    method: 'POST', headers: authJson(token),
+    body: JSON.stringify({ eventId: ev.id, sectorId: central.id, quantity: 1 })
+  });
+  assert.equal(resv2.status, 201);
+  assert.equal(await sectorAvailable(ev.id, 'central'), central.available - 1);
+
+  // Outro cliente não confirma reserva alheia
+  const intruder = (await fetchJson('/auth/register', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Intruso', email: `intruso-${Date.now()}@email.com`, password: 'senha-segura' })
+  })).body.token;
+  const stolen = await fetchJson('/orders', {
+    method: 'POST', headers: authJson(intruder), body: JSON.stringify({ reservationId: resv2.body.reservation.id })
+  });
+  assert.equal(stolen.status, 404);
+
+  const old = await fetchJson('/orders', {
+    method: 'POST', headers: authJson(token), body: JSON.stringify({ reservationId: resv.body.reservation.id })
+  });
+  assert.equal(old.status, 409, 'reserva substituída não pode mais ser usada');
+
+  const buy = await fetchJson('/orders', {
+    method: 'POST', headers: authJson(token), body: JSON.stringify({ reservationId: resv2.body.reservation.id })
+  });
+  assert.equal(buy.status, 201);
+  assert.equal(buy.body.order.sectorName, 'Cadeira Central');
+  assert.equal(buy.body.order.quantity, 1);
+  assert.equal(await sectorAvailable(ev.id, 'central'), central.available - 1, 'confirmar não baixa o estoque de novo');
+
+  const again = await fetchJson('/orders', {
+    method: 'POST', headers: authJson(token), body: JSON.stringify({ reservationId: resv2.body.reservation.id })
+  });
+  assert.equal(again.status, 409, 'a mesma reserva não vira dois pedidos');
+});
+
+test('Reserva cancelada ou vencida devolve o estoque', async () => {
+  const ev = await newEventWithStock();
+  const sul = ev.sectors.find((x) => x.code === 'sul');
+  const token = await getUserToken();
+
+  const r1 = await fetchJson('/reservations', {
+    method: 'POST', headers: authJson(token), body: JSON.stringify({ eventId: ev.id, sectorId: sul.id, quantity: 3 })
+  });
+  const del = await fetchJson(`/reservations/${r1.body.reservation.id}`, { method: 'DELETE', headers: authJson(token) });
+  assert.equal(del.status, 200);
+  assert.equal(await sectorAvailable(ev.id, 'sul'), sul.available, 'cancelar devolve o estoque');
+
+  process.env.RESERVATION_TTL_SECONDS = '1';
+  try {
+    const r2 = await fetchJson('/reservations', {
+      method: 'POST', headers: authJson(token), body: JSON.stringify({ eventId: ev.id, sectorId: sul.id, quantity: 4 })
+    });
+    assert.equal(r2.status, 201);
+    const r3 = await fetchJson('/reservations', {
+      method: 'POST', headers: authJson(await (async () => (await fetchJson('/auth/register', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Outro', email: `outro-${Date.now()}@email.com`, password: 'senha-segura' })
+      })).body.token)()), body: JSON.stringify({ eventId: ev.id, sectorId: sul.id, quantity: 2 })
+    });
+    assert.equal(r3.status, 201);
+    assert.equal(await sectorAvailable(ev.id, 'sul'), sul.available - 6);
+
+    await new Promise((resolve) => setTimeout(resolve, 1300));
+
+    // Confirmar depois do prazo: recusado e o estoque volta na hora
+    const late = await fetchJson('/orders', {
+      method: 'POST', headers: authJson(token), body: JSON.stringify({ reservationId: r2.body.reservation.id })
+    });
+    assert.equal(late.status, 410);
+    assert.equal(await sectorAvailable(ev.id, 'sul'), sul.available - 2);
+
+    // A limpeza do worker devolve as demais reservas vencidas
+    await worker.sweepReservations();
+    assert.equal(await sectorAvailable(ev.id, 'sul'), sul.available, 'nenhum ingresso fica preso');
+  } finally {
+    delete process.env.RESERVATION_TTL_SECONDS;
+  }
+});
+
+test('Compra publica PEDIDO_CONFIRMADO: o worker gera o PDF e envia o e-mail (fan-out)', async () => {
+  const email = `pdf-${Date.now()}@email.com`;
+  const reg = await fetchJson('/auth/register', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Carla Torcedora', email, password: 'senha-segura' })
+  });
+  const token = reg.body.token;
+  const ev = await newEventWithStock();
+  const buy = await fetchJson('/orders', {
+    method: 'POST', headers: authJson(token),
+    body: JSON.stringify({ eventId: ev.id, sectorId: ev.sectors[0].id, quantity: 2 })
+  });
+  assert.equal(buy.status, 201);
+  assert.equal(buy.body.notifications.published, true);
+  const orderId = buy.body.order.id;
+
+  const before = await fetchJson(`/orders/${orderId}/ticket`, { headers: authJson(token) });
+  assert.equal(before.status, 202, 'antes do worker o PDF ainda está sendo gerado');
+
+  await worker.runOnce(); // consome as duas tarefas do fan-out (PDF e e-mail)
+
+  const ready = await fetchJson(`/orders/${orderId}/ticket`, { headers: authJson(token) });
+  assert.equal(ready.status, 200);
+  assert.equal(ready.body.status, 'ready');
+  const pdf = await fetch(`${baseUrl}${ready.body.downloadUrl}`);
+  assert.equal(pdf.status, 200);
+  assert.match(pdf.headers.get('content-type'), /application\/pdf/);
+  assert.equal(Buffer.from(await pdf.arrayBuffer()).subarray(0, 5).toString(), '%PDF-');
+
+  // E-mail (em desenvolvimento vai para data/outbox) com o link de download
+  const outbox = path.join(process.env.DATA_DIR, 'outbox');
+  const mail = fs.readdirSync(outbox).map((f) => fs.readFileSync(path.join(outbox, f), 'utf8')).find((t) => t.includes(orderId));
+  assert.ok(mail, 'e-mail de confirmação gerado');
+  assert.ok(mail.startsWith(`Para: ${email}`));
+  const link = mail.match(/https?:\/\/\S+\/tickets\/\S+/)[0];
+  const viaEmail = await fetch(link.replace(/^https?:\/\/[^/]+/, baseUrl));
+  assert.equal(viaEmail.status, 200, 'o link do e-mail baixa o ingresso sem login');
+
+  // Segurança: token adulterado e pedido de outra pessoa
+  const forged = await fetch(`${baseUrl}/tickets/${encodeURIComponent(orderId)}/download?token=abc`);
+  assert.equal(forged.status, 401);
+  const other = await fetchJson(`/orders/${orderId}/ticket`, { headers: authJson(await getUserToken()) });
+  assert.equal(other.status, 404);
+
+  const logs = (await fetchJson('/audit-logs')).body.map((l) => l.action);
+  assert.ok(logs.includes('TICKET_PDF_GENERATED') && logs.includes('EMAIL_SENT'));
+});
+
+test('GET /users/me/email-notifications informa o estado da assinatura de e-mail', async () => {
+  const token = await getUserToken();
+  const res = await fetchJson('/users/me/email-notifications', { headers: authJson(token) });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.status, 'local', 'sem SNS configurado (testes) o e-mail é local');
+  const anon = await fetchJson('/users/me/email-notifications');
+  assert.equal(anon.status, 401);
 });
 
 test('GET /audit-logs retorna histórico de ações do CRUD (NoSQL DynamoDB)', async () => {

@@ -9,6 +9,9 @@ const orderRoutes = require('./modules/orders/order.routes');
 const userRoutes = require('./modules/users/user.routes');
 const authRoutes = require('./modules/auth/auth.routes');
 const auditRoutes = require('./modules/audit/audit.routes');
+const reservationRoutes = require('./modules/reservations/reservation.routes');
+const ticketRoutes = require('./modules/tickets/ticket.routes');
+const meRoutes = require('./modules/users/me.routes');
 
 const app = express();
 
@@ -37,6 +40,9 @@ app.use('/orders', orderRoutes); // compra e listagem de pedidos
 app.use('/auth', userRoutes); // /auth/register, /auth/login
 app.use('/auth', authRoutes); // /auth/admin
 app.use('/audit-logs', auditRoutes); // auditoria (DynamoDB)
+app.use('/reservations', reservationRoutes); // reserva temporária do checkout
+app.use('/tickets', ticketRoutes); // download do PDF pelo link do e-mail
+app.use('/users/me', meRoutes); // preferências do cliente logado (e-mail)
 
 app.use(errorHandler);
 

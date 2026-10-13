@@ -5,7 +5,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
-const { AWS_REGION, UPLOADS_DIR } = require('../config');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+const { AWS_REGION, UPLOADS_DIR, DATA_DIR } = require('../config');
 
 const BUCKET = process.env.S3_BUCKET_NAME;
 const s3 = BUCKET ? new S3Client({ region: AWS_REGION }) : null;
@@ -70,4 +71,34 @@ async function loadImage(task) {
   return null;
 }
 
-module.exports = { IMAGE_TYPES, saveBanner, saveThumbnail, loadImage };
+// ---------- Ingressos em PDF (PRIVADOS) ----------
+// Ficam em tickets/, fora do prefixo público banners/* da bucket policy: ninguém lê sem um link
+// temporário (presigned URL) gerado pela API para o dono do ingresso.
+// Em desenvolvimento ficam em backend/data/tickets (fora da pasta pública /uploads).
+const ticketKey = (orderId) => `tickets/${orderId}.pdf`;
+const localTicketPath = (orderId) => path.join(DATA_DIR, 'tickets', `${path.basename(orderId)}.pdf`);
+
+async function saveTicket(orderId, buffer) {
+  if (s3) {
+    await s3.send(new PutObjectCommand({ Bucket: BUCKET, Key: ticketKey(orderId), Body: buffer, ContentType: 'application/pdf' }));
+    return;
+  }
+  fs.mkdirSync(path.dirname(localTicketPath(orderId)), { recursive: true });
+  fs.writeFileSync(localTicketPath(orderId), buffer);
+}
+
+// Link temporário de download (5 minutos). Em desenvolvimento devolve o caminho do arquivo local.
+async function ticketDownload(orderId) {
+  if (s3) {
+    const url = await getSignedUrl(s3, new GetObjectCommand({
+      Bucket: BUCKET,
+      Key: ticketKey(orderId),
+      ResponseContentType: 'application/pdf',
+      ResponseContentDisposition: `inline; filename="ingresso-${orderId}.pdf"`
+    }), { expiresIn: 300 });
+    return { url };
+  }
+  return { filePath: localTicketPath(orderId) };
+}
+
+module.exports = { IMAGE_TYPES, saveBanner, saveThumbnail, loadImage, saveTicket, ticketDownload };

@@ -50,6 +50,11 @@ flowchart TD
 5. **Amazon DynamoDB:** Banco NoSQL para log de auditoria obrigatório de todas as operações de CRUD (`CREATE`, `READ`, `UPDATE`, `DELETE`, `ORDER`, `RESCALE_BANNER_*`), contendo ID, ação, dados manipulados e timestamp.
 6. **Amazon SNS / SQS (Desacoplamento):** Quando um evento é cadastrado com imagem, a API grava a imagem bruta no S3 e **publica uma mensagem no tópico SNS**, que entrega à **fila SQS** (assinatura com `raw_message_delivery`). O **Worker** (`worker.js`) roda em processo separado, consome a fila, aplica o redimensionamento com `sharp`, salva o thumbnail no S3 e atualiza o RDS. Mensagens que falham repetidamente vão para uma **DLQ**; falhas definitivas marcam o evento como `failed`.
 
+### Novos recursos (fan-out, e-mail e dashboard)
+* **SNS `order-events` → 2 filas SQS (fan-out):** cada compra publica um único `PEDIDO_CONFIRMADO`; a fila `tickets` gera o PDF com QR code (S3, prefixo privado `tickets/`) e a fila `notifications` envia o e-mail. Cada fila tem sua DLQ.
+* **SNS `customer-emails` (e-mail aos clientes):** o **SES é bloqueado no AWS Academy** (`explicitDeny`), então o e-mail sai por um tópico SNS com protocolo `email`. No cadastro, a aplicação assina o e-mail do cliente com um **filtro pelo próprio endereço**; a AWS envia um e-mail *"AWS Notification - Subscription Confirmation"* que o cliente precisa confirmar (uma vez). Depois disso, cada compra chega por e-mail com o link do PDF.
+* **Dashboard do CloudWatch** (`terraform output cloudwatch_dashboard_url`): CPU do grupo com as linhas de 70%/25%, instâncias em serviço, requisições e latência do ALB, estado dos alarmes, filas e métricas de negócio publicadas pela aplicação (namespace `StadiumTickets`: ingressos vendidos, pedidos, reservas, e-mails).
+
 ### Parte 2 - Elasticidade e Auto Scaling
 * **Application Load Balancer (ALB):** À frente das instâncias distribuindo a carga de trabalho, com health check periódico na rota `/health`.
 * **Monitoramento detalhado (1 min) habilitado no Launch Template**, necessário para os alarmes de 60s receberem dados. O `health_check_grace_period` é de 600s para dar tempo ao bootstrap (apt + Node + npm) da instância.
@@ -113,21 +118,22 @@ Acesse esse endereço no seu navegador para utilizar a loja de ingressos!
 A especificação do trabalho exige um link de vídeo demonstrando a Parte 2 funcionando. Siga este roteiro de 2 a 3 minutos:
 
 1. **Mostrar o estado inicial:**
-   * Abra o console da AWS em **EC2 -> Auto Scaling Groups** e **Target Groups**.
-   * Mostre que há apenas **1 instância** saudável executando no Target Group.
-   * Abra o painel administrativo `http://<ALB-URL>/admin.html` e entre com a `admin_password`.
-2. **Disparar a carga de CPU:**
-   * No painel, vá na seção de **teste de carga / elasticidade**, use **8 a 15 requisições simultâneas** e duração de **300 segundos**, e clique em **"⚡ Iniciar carga"**.
-   * A rota `/stress` é restrita ao administrador (exige o token do login) e cada requisição dura 4s; o painel dispara várias em paralelo até a CPU passar de 70%.
-   * Acompanhe a lista de hosts: ao entrar a 2ª instância, aparecerá um novo hostname atendendo.
-3. **Mostrar o CloudWatch e o Scale Out:**
-   * Vá em **CloudWatch -> Alarms** e mostre o alarme `stadium-tickets-cpu-high-gt-70` entrando em estado **ALARM** (CPU média > 70%).
-   * Vá em **Auto Scaling Groups -> Activity History** e mostre o ASG provisionando a **2ª instância**.
-   * Vá em **Target Groups** e mostre a nova instância sendo registrada.
+   * Abra o **dashboard do CloudWatch** (`terraform output cloudwatch_dashboard_url`): CPU baixa e **1 instância**.
+   * Abra o painel `http://<ALB-URL>/admin.html` → Infraestrutura → **Monitorar** (1 hostname respondendo).
+2. **Disparar a carga com o k6** (detalhes em `loadtest/README.md`):
+   ```bash
+   cd loadtest
+   BASE_URL=http://<ALB-URL> ADMIN_PASSWORD='sua-senha' \
+   K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=relatorio-k6.html k6 run k6-elasticidade.js
+   ```
+   * O k6 chama `/stress` (só admin), que ocupa as 2 vCPUs da t3.micro; o painel ao vivo do k6 fica em http://localhost:5665.
+3. **Mostrar o Scale Out no dashboard:**
+   * A CPU passa da linha de **70%**, o alarme `stadium-tickets-cpu-high-gt-70` vai para **ALARM** e o gráfico de instâncias sobe para **2** (e, com carga sustentada, **3**).
+   * No admin, aparecem novos hostnames respondendo (o ALB distribuindo).
+   * Opcional: **Auto Scaling Groups → Activity** mostra a criação da instância.
 4. **Demonstrar o Scale In:**
-   * Clique em **"Parar"** (ou aguarde o fim) e a CPU cai para menos de 25%.
-   * Mostre o alarme `stadium-tickets-cpu-low-lt-25` acionando o Scale-In.
-   * O Auto Scaling encerra a instância extra e retorna à capacidade mínima de 1 instância.
+   * Ao fim do k6 a CPU cai abaixo de **25%**, o alarme `stadium-tickets-cpu-low-lt-25` dispara e o grupo volta a **1** instância.
+   * Mostre o `relatorio-k6.html` com os gráficos do teste completo.
 
 ---
 

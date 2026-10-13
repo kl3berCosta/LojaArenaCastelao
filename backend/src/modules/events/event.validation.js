@@ -37,4 +37,37 @@ function parseEventFields(body, { partial }) {
   return { values, errors };
 }
 
-module.exports = { parseEventFields };
+// Alterações de setores enviadas pelo admin na edição do jogo:
+// JSON (string no formulário multipart, ou array) com [{ id, price?, available? }].
+function parseSectorChanges(raw) {
+  if (raw === undefined || raw === '') return { changes: null, errors: [] };
+  let list = raw;
+  if (typeof raw === 'string') {
+    try {
+      list = JSON.parse(raw);
+    } catch (err) {
+      return { changes: null, errors: ['setores (JSON inválido)'] };
+    }
+  }
+  if (!Array.isArray(list) || list.length === 0 || list.length > 20) return { changes: null, errors: ['setores'] };
+
+  const errors = [];
+  const changes = list.map((item) => {
+    const change = { id: String(item?.id || '') };
+    if (!change.id) errors.push('id do setor');
+    if (item?.price !== undefined && item.price !== '') {
+      const price = Number(item.price);
+      if (!Number.isFinite(price) || price <= 0) errors.push(`preço do setor ${change.id}`);
+      else change.price = Math.round(price * 100) / 100;
+    }
+    if (item?.available !== undefined && item.available !== '') {
+      const available = Number(item.available);
+      if (!Number.isInteger(available) || available < 0) errors.push(`disponível do setor ${change.id}`);
+      else change.available = available;
+    }
+    return change;
+  });
+  return { changes: errors.length ? null : changes, errors };
+}
+
+module.exports = { parseEventFields, parseSectorChanges };
