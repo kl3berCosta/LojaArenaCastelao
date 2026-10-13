@@ -186,6 +186,47 @@ O Terraform imprimirá a URL pública da aplicação:
 application_url = "http://stadium-tickets-alb-XXXXX.us-east-1.elb.amazonaws.com"
 ```
 
+> **AWS Academy:** o `apply` usa a `LabRole` (instance profile `LabInstanceProfile`). Se a política da conta bloquear a leitura do bucket S3 pelo Terraform, crie o bucket pelo AWS CLI e use `create_banners_bucket = false` (passo a passo em [infra/README.md](infra/README.md)). A instância leva de 2 a 8 minutos após o `apply` para responder (até lá o ALB devolve 502).
+
+### Atualizar a aplicação depois de uma mudança no código
+
+As instâncias baixam o código do GitHub ao nascer. Depois de `git push origin main`, troque a instância para ela pegar a versão nova (o `start-instance-refresh` é bloqueado no AWS Academy):
+
+```bash
+aws autoscaling terminate-instance-in-auto-scaling-group --no-should-decrement-desired-capacity \
+  --instance-id $(aws autoscaling describe-auto-scaling-groups --query 'AutoScalingGroups[0].Instances[0].InstanceId' --output text)
+```
+
+Mudanças em `infra/` (ou em variáveis como senhas) exigem `terraform apply` antes da troca.
+
+---
+
+## 🔗 Como acessar (depois do deploy)
+
+Use a `application_url` do `terraform output` (sempre `http://`, sem certificado):
+
+| Página | Endereço | Acesso |
+| :--- | :--- | :--- |
+| Loja (vitrine, mapa de setores, checkout) | `http://<ALB>/` | Público; comprar exige cadastro/login |
+| Meus ingressos (pedidos e PDFs) | `http://<ALB>/meus-ingressos.html` | Torcedor logado |
+| Painel administrativo | `http://<ALB>/admin.html` | Senha `admin_password` do `terraform.tfvars`. **Não há link na loja**: o acesso é só pelo endereço |
+| Status dos serviços | `http://<ALB>/health` | Público (usado pelo health check do ALB) |
+| Dashboard do CloudWatch | `terraform output cloudwatch_dashboard_url` | Console da AWS (ver abaixo) |
+
+**Dashboard e console da AWS:** os links do console exigem estar logado na conta. No AWS Academy, abra o console pelo botão **AWS** do Learner Lab (com a sessão ativa) e só então abra o link do dashboard, ou navegue por *CloudWatch → Dashboards → stadium-tickets-elasticidade*.
+
+**E-mails de confirmação de compra:** o SES é bloqueado no AWS Academy, então os e-mails saem pelo **Amazon SNS**. Ao se cadastrar, o torcedor recebe um e-mail **"AWS Notification - Subscription Confirmation"** e precisa clicar em **Confirm subscription** uma única vez (veja também o spam). A partir daí, cada compra chega por e-mail com o link do PDF do ingresso. Contas antigas podem ativar em *Meus ingressos → Ativar e-mails*.
+
+**Senha do admin:** troque o valor de exemplo de `admin_password` no `terraform.tfvars` antes de publicar (ele é público no `terraform.tfvars.example`), rode `terraform apply` e troque a instância.
+
+**Ao terminar:** `terraform destroy` (e, se o bucket foi criado pelo CLI, `aws s3 rb s3://<bucket> --force`). RDS, ALB e ElastiCache são cobrados por hora.
+
+### Documentos de apoio
+
+- [Guia-Apresentacao-Video.pdf](Guia-Apresentacao-Video.pdf): como cada serviço foi usado, glossário e roteiro do vídeo.
+- [Servicos-AWS-Implementacao.pdf](Servicos-AWS-Implementacao.pdf): implementação detalhada de cada serviço da AWS.
+- [loadtest/README.md](loadtest/README.md): teste de carga com k6.
+
 ---
 
 ## 🎥 Demonstração da Parte 2 (Vídeo do Auto Scaling)
@@ -193,6 +234,12 @@ application_url = "http://stadium-tickets-alb-XXXXX.us-east-1.elb.amazonaws.com"
 A especificação do trabalho exige um vídeo demonstrando o Auto Scaling respondendo à carga:
 1. Abra o **dashboard do CloudWatch** (`terraform output cloudwatch_dashboard_url`) e o painel `http://<URL-do-ALB>/admin.html` → Infraestrutura → **Monitorar**.
 2. Rode o teste de carga com o **k6** (ver [loadtest/README.md](loadtest/README.md)): ele chama a rota `/stress` (restrita ao admin) e gera um relatório HTML com gráficos.
+   ```bash
+   cd loadtest
+   BASE_URL=http://<ALB> ADMIN_PASSWORD='<admin_password do tfvars>' \
+   K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=relatorio-k6.html k6 run k6-elasticidade.js
+   ```
+   Se o login de admin falhar (HTTP 401), a senha passada não é a do `terraform.tfvars`.
 3. No console da AWS, acompanhe:
    - A CPU média subindo acima de 70% por 1 minuto.
    - O alarme do **CloudWatch** disparando a política de Scale-Out.
