@@ -77,6 +77,18 @@ async function publishOrderConfirmed(payload) {
   return { provider: 'Local Queue (fan-out simulado)' };
 }
 
+// Pede (de novo) só o PDF de um pedido, direto na fila de ingressos, sem reenviar o e-mail.
+// Usado para pedidos feitos antes da geração de PDF existir ou cujo PDF falhou.
+async function requestTicketPdf(payload) {
+  const message = { type: 'ORDER_CONFIRMED', ...payload, regenerated: true, publishedAt: new Date().toISOString() };
+  if (QUEUES.ticket) {
+    await sqs.send(new SendMessageCommand({ QueueUrl: QUEUES.ticket, MessageBody: JSON.stringify(message) }));
+    return { provider: 'Amazon SQS (fila de ingressos)' };
+  }
+  localStore.pushLocalTask({ ...message, target: 'ticket' });
+  return { provider: 'Local Queue' };
+}
+
 // ---------- Consumidor (usado pelo worker) ----------
 async function deleteMessage(queueUrl, receiptHandle) {
   await sqs.send(new DeleteMessageCommand({ QueueUrl: queueUrl, ReceiptHandle: receiptHandle }));
@@ -120,6 +132,7 @@ module.exports = {
   configuredQueues,
   publishTask,
   publishOrderConfirmed,
+  requestTicketPdf,
   receiveTasks,
   deleteMessage,
   pullLocalTask: localStore.pullLocalTask

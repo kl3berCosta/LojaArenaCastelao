@@ -95,6 +95,7 @@ async function processTicket(task, { receiveCount = 1 } = {}) {
     await logCrudAction('TICKET_PDF_GENERATED', 'ticket', { orderId: order.id, bytes: pdf.length });
     putMetric('TicketPdfsGenerated');
   }, async (error) => {
+    if (order?.id) await Order.setTicketStatus(order.id, 'failed'); // permite pedir de novo pela tela
     await logCrudAction('TICKET_PDF_FAILED', 'ticket', { orderId: order?.id, reason: error.message, attempts: receiveCount });
   });
 }

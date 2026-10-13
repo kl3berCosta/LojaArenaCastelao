@@ -1,8 +1,28 @@
 // CONTROLLER de ingressos em PDF.
 const Order = require('../orders/order.model');
+const Event = require('../events/event.model');
+const queue = require('../../lib/queue');
+const { logCrudAction } = require('../audit/audit.model');
 const storage = require('../../lib/storage');
 const { signDownloadToken, verifyDownloadToken } = require('./ticket.token');
 const { serverError } = require('../../lib/http');
+
+// Um pedido sem PDF há mais de 2 minutos (feito antes da geração de PDF existir, ou cujo PDF falhou)
+// é enviado de novo para a fila de ingressos. O status "queued" evita reenviar a cada clique.
+const STUCK_AFTER_MS = 2 * 60 * 1000;
+
+async function requeueIfStuck(order) {
+  const age = Date.now() - new Date(order.createdAt).getTime();
+  const stuck = order.ticketStatus === 'failed' || (order.ticketStatus === 'pending' && age > STUCK_AFTER_MS);
+  if (!stuck) return;
+  const event = await Event.findById(order.eventId);
+  await queue.requestTicketPdf({
+    order,
+    event: event && { id: event.id, teamHome: event.teamHome, teamAway: event.teamAway, stadium: event.stadium, date: event.date }
+  });
+  await Order.setTicketStatus(order.id, 'queued');
+  await logCrudAction('TICKET_PDF_REQUEUED', 'ticket', { orderId: order.id, previousStatus: order.ticketStatus });
+}
 
 // GET /orders/:id/ticket (cliente logado) - status do PDF e link de download do próprio ingresso
 async function getMine(req, res) {
@@ -13,6 +33,7 @@ async function getMine(req, res) {
       return res.status(404).json({ message: 'Ingresso não encontrado.' });
     }
     if (order.ticketStatus !== 'ready') {
+      await requeueIfStuck(order);
       return res.status(202).json({ status: 'pending', message: 'O PDF do seu ingresso está sendo gerado. Tente em alguns segundos.' });
     }
     const token = signDownloadToken(order.id, '10m');
