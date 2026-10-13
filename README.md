@@ -227,19 +227,3 @@ Use a `application_url` do `terraform output` (sempre `http://`, sem certificado
 
 ---
 
-## 🎥 Demonstração da Parte 2 (Vídeo do Auto Scaling)
-
-A especificação do trabalho exige um vídeo demonstrando o Auto Scaling respondendo à carga:
-1. **Pelo painel admin (mais simples):** `http://<URL-do-ALB>/admin.html` → aba **Infraestrutura AWS** → *Teste de elasticidade*. Clique em **⚡ Iniciar carga** (intensidade 6, 8 minutos) e acompanhe no quadro **Auto Scaling ao vivo** as instâncias em serviço, a CPU com as linhas de 70%/25%, o estado dos alarmes e o histórico de criação/encerramento de instâncias. Mantenha a aba aberta durante o teste.
-2. **Alternativa:** o dashboard do CloudWatch (`terraform output cloudwatch_dashboard_url`) e o teste de carga com o **k6** (ver [loadtest/README.md](loadtest/README.md)): ele chama a rota `/stress` (restrita ao admin) e gera um relatório HTML com gráficos.
-   ```bash
-   cd loadtest
-   BASE_URL=http://<ALB> ADMIN_PASSWORD='<admin_password do tfvars>' \
-   K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=relatorio-k6.html k6 run k6-elasticidade.js
-   ```
-   Se o login de admin falhar (HTTP 401), a senha passada não é a do `terraform.tfvars`.
-3. No console da AWS, acompanhe:
-   - A CPU média subindo acima de 70% por 1 minuto.
-   - O alarme do **CloudWatch** disparando a política de Scale-Out.
-   - O **Auto Scaling Group** criando uma nova instância EC2 e registrando-a no Target Group do ALB.
-   - Após o término do teste, a CPU caindo abaixo de 25% e o Auto Scaling encerrando a instância excedente.
