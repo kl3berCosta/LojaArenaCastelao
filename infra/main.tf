@@ -40,9 +40,7 @@ locals {
   }
 }
 
-# -------------------------------------------------------------------
 # REDE: VPC PADRÃO & SUBNETS (Compatível com AWS Academy & Contas Padrão)
-# -------------------------------------------------------------------
 data "aws_vpc" "default" {
   default = true
 }
@@ -54,9 +52,7 @@ data "aws_subnets" "default" {
   }
 }
 
-# -------------------------------------------------------------------
 # SECURITY GROUPS (Menor Privilégio)
-# -------------------------------------------------------------------
 
 # 1. Security Group para o Load Balancer (ALB)
 resource "aws_security_group" "alb" {
@@ -176,9 +172,7 @@ resource "aws_security_group" "redis" {
   tags = local.tags
 }
 
-# -------------------------------------------------------------------
 # IAM ROLE & INSTANCE PROFILE PARA AS INSTÂNCIAS EC2
-# -------------------------------------------------------------------
 resource "aws_iam_role" "ec2" {
   count = var.use_existing_lab_role ? 0 : 1
   name  = "${local.project_name}-ec2-role"
@@ -283,9 +277,7 @@ resource "aws_iam_instance_profile" "ec2" {
   role  = aws_iam_role.ec2[0].name
 }
 
-# -------------------------------------------------------------------
 # PARTE 1 - SERVIÇO 3: AMAZON S3 (Arquivos Binários - Banners dos Jogos)
-# -------------------------------------------------------------------
 # O bucket é criado aqui (create_banners_bucket = true, padrão). Em contas com SCP que bloqueia a
 # leitura de configurações do bucket (AWS Academy: s3:GetBucketObjectLockConfiguration), defina
 # create_banners_bucket = false e banners_bucket_name com um bucket criado manualmente;
@@ -336,9 +328,7 @@ resource "aws_s3_bucket_policy" "banners_public_read" {
   depends_on = [aws_s3_bucket_public_access_block.banners]
 }
 
-# -------------------------------------------------------------------
 # PARTE 1 - SERVIÇO 5: AMAZON DYNAMODB (Auditoria NoSQL do CRUD)
-# -------------------------------------------------------------------
 resource "aws_dynamodb_table" "audit_logs" {
   name         = "${local.project_name}-audit-logs"
   billing_mode = "PAY_PER_REQUEST"
@@ -371,9 +361,7 @@ resource "aws_dynamodb_table" "audit_logs" {
   tags = local.tags
 }
 
-# -------------------------------------------------------------------
 # PARTE 1 - SERVIÇO 6: AMAZON SQS & SNS (Desacoplamento do Worker)
-# -------------------------------------------------------------------
 # Fila de mensagens que falharam repetidamente (evita reprocessar mensagens "venenosas" por 24h).
 resource "aws_sqs_queue" "banner_tasks_dlq" {
   name                      = "${local.project_name}-banner-dlq"
@@ -429,9 +417,7 @@ resource "aws_sqs_queue_policy" "sqs_policy" {
   })
 }
 
-# -------------------------------------------------------------------
 # SNS FAN-OUT: PEDIDO_CONFIRMADO -> fila do PDF do ingresso + fila do e-mail
-# -------------------------------------------------------------------
 # Um único evento publicado pela API chega a DOIS consumidores independentes. Se o envio de
 # e-mail falhar, o PDF continua sendo gerado (e vice-versa); cada fila tem a sua DLQ.
 locals {
@@ -502,9 +488,7 @@ resource "aws_sns_topic" "customer_emails" {
   tags = local.tags
 }
 
-# -------------------------------------------------------------------
 # PARTE 1 - SERVIÇO 2: AMAZON RDS (PostgreSQL Relacional)
-# -------------------------------------------------------------------
 resource "aws_db_subnet_group" "rds" {
   name       = "${local.project_name}-rds-subnets"
   subnet_ids = data.aws_subnets.default.ids
@@ -535,9 +519,7 @@ resource "aws_db_instance" "postgres" {
   tags = local.tags
 }
 
-# -------------------------------------------------------------------
 # PARTE 1 - SERVIÇO 4: AMAZON ELASTICACHE (Redis para Cache)
-# -------------------------------------------------------------------
 resource "aws_elasticache_subnet_group" "redis" {
   name       = "${local.project_name}-redis-subnets"
   subnet_ids = data.aws_subnets.default.ids
@@ -557,9 +539,7 @@ resource "aws_elasticache_cluster" "redis" {
   tags = local.tags
 }
 
-# -------------------------------------------------------------------
 # PARTE 2: APPLICATION LOAD BALANCER (ALB)
-# -------------------------------------------------------------------
 resource "aws_lb" "app" {
   name               = "${local.project_name}-alb"
   internal           = false
@@ -626,9 +606,7 @@ resource "aws_lb_listener" "https" {
   }
 }
 
-# -------------------------------------------------------------------
 # PARTE 2: LAUNCH TEMPLATE & AUTO SCALING GROUP (EC2)
-# -------------------------------------------------------------------
 
 # Busca AMI mais recente do Ubuntu 22.04 LTS
 data "aws_ami" "ubuntu" {
@@ -743,9 +721,7 @@ resource "aws_autoscaling_group" "app" {
   }
 }
 
-# -------------------------------------------------------------------
 # PARTE 2: REGRAS DE ELASTICIDADE (CloudWatch Alarms & Scaling Policies)
-# -------------------------------------------------------------------
 
 # REGRA c): Se CPU > 70% por mais de 1 minuto -> Adiciona +1 instância (Máx 3)
 resource "aws_autoscaling_policy" "scale_out" {
@@ -801,9 +777,7 @@ resource "aws_cloudwatch_metric_alarm" "cpu_low" {
   }
 }
 
-# -------------------------------------------------------------------
 # PARTE 2: DASHBOARD DO CLOUDWATCH (demonstração da elasticidade)
-# -------------------------------------------------------------------
 # Em uma tela: CPU do grupo com as linhas de 70% e 25%, número de instâncias, requisições e
 # latência no ALB, estado dos alarmes, filas e as métricas de negócio publicadas pela aplicação.
 locals {

@@ -10,3 +10,8 @@ backend/data/
 # Saídas do teste de carga (k6)
 loadtest/relatorio-k6.html
 loadtest/resumo-k6.json
+
+# PDFs de apoio (guia, serviços e roteiro do vídeo): ficam só no computador, não vão para o GitHub
+Guia-Apresentacao-Video.pdf
+Servicos-AWS-Implementacao.pdf
+Roteiro-Video-5min.pdf

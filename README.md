@@ -223,8 +223,6 @@ Use a `application_url` do `terraform output` (sempre `http://`, sem certificado
 
 ### Documentos de apoio
 
-- [Guia-Apresentacao-Video.pdf](Guia-Apresentacao-Video.pdf): como cada serviço foi usado, glossário e roteiro do vídeo.
-- [Servicos-AWS-Implementacao.pdf](Servicos-AWS-Implementacao.pdf): implementação detalhada de cada serviço da AWS.
 - [loadtest/README.md](loadtest/README.md): teste de carga com k6.
 
 ---
