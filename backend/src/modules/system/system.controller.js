@@ -1,6 +1,8 @@
 // CONTROLLER de sistema: healthcheck do ALB e carga de CPU para demonstrar o Auto Scaling.
 const os = require('node:os');
 const { Worker } = require('node:worker_threads');
+const { getElasticityStatus } = require('./elasticity.service');
+const { serverError } = require('../../lib/http');
 
 // GET /health - usado pelo health check do ALB e pelo painel admin
 function health(req, res) {
@@ -79,4 +81,13 @@ function stress(req, res) {
   }
 }
 
-module.exports = { health, stress };
+// GET /admin/elasticity (admin) - instâncias, alarmes, CPU e atividades do Auto Scaling, lidos da AWS
+async function elasticity(req, res) {
+  try {
+    return res.json(await getElasticityStatus());
+  } catch (error) {
+    return serverError(res, 'Erro ao consultar o Auto Scaling.', error);
+  }
+}
+
+module.exports = { health, stress, elasticity };

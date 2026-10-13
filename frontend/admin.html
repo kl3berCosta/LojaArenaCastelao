@@ -82,21 +82,50 @@
         <div class="toolbar"><h2>Serviços AWS</h2><button class="btn btn-ghost btn-sm" id="refresh-health">Atualizar</button></div>
         <div class="aws-grid" id="aws-grid"></div>
 
-        <div class="toolbar"><h2>Elasticidade (Parte 2)</h2></div>
+        <div class="toolbar"><h2>Teste de elasticidade (Parte 2)</h2></div>
         <div class="stress-grid">
           <div class="panel">
-            <h3 style="margin-top:0">Teste de carga com k6</h3>
-            <p class="sub" style="margin-bottom:12px">A carga é gerada pelo <b>k6</b>, fora do navegador, e produz um relatório com gráficos. Com a CPU média acima de 70% por mais de 1 minuto, o Auto Scaling cria novas instâncias (máx. 3). Veja o passo a passo em <code>loadtest/README.md</code>.</p>
-            <pre class="k6-cmd" id="k6-cmd"></pre>
-            <p class="sub" style="margin:12px 0 0">Acompanhe também o dashboard do CloudWatch (<code>terraform output cloudwatch_dashboard_url</code>).</p>
+            <h3 style="margin-top:0">Gerar carga de CPU</h3>
+            <p class="sub" style="margin-bottom:14px">Envia requisições à rota <code>/stress</code> pelo Load Balancer, ocupando as vCPUs das instâncias. Com a CPU média acima de 70% por mais de 1 minuto o Auto Scaling cria uma nova instância (máx. 3); abaixo de 25% ele remove. <b>Mantenha esta aba aberta</b> durante o teste.</p>
+            <div class="grid-2">
+              <div class="field"><label for="stress-conc">Intensidade (requisições simultâneas)</label><input id="stress-conc" type="number" min="1" max="12" value="6" /></div>
+              <div class="field"><label for="stress-mins">Duração (minutos)</label><input id="stress-mins" type="number" min="1" max="30" value="8" /></div>
+            </div>
+            <div style="display:flex;gap:10px">
+              <button class="btn btn-primary" id="stress-start">⚡ Iniciar carga</button>
+              <button class="btn btn-danger" id="stress-stop" disabled>Parar</button>
+            </div>
+            <div class="stat-row">
+              <div class="stat"><b id="st-elapsed">0:00</b><span>tempo</span></div>
+              <div class="stat"><b id="st-done">0</b><span>requisições OK</span></div>
+              <div class="stat"><b id="st-err">0</b><span>erros</span></div>
+              <div class="stat"><b id="st-hosts">0</b><span>instâncias respondendo</span></div>
+            </div>
+            <h4 class="mini-title">Instâncias que responderam (via ALB)</h4>
+            <ul class="host-list" id="host-list"><li><span>—</span><span>aguardando</span></li></ul>
           </div>
+
           <div class="panel">
-            <div class="toolbar" style="margin:0 0 6px"><h3 style="margin:0">Instâncias respondendo</h3>
-              <button class="btn btn-ghost btn-sm" id="monitor-toggle">▶ Monitorar</button></div>
-            <p class="sub" style="margin-bottom:12px">Consulta o /health pelo ALB a cada 2 s. Quando o ASG escala, novos hostnames aparecem aqui.</p>
-            <ul class="host-list" id="host-list"><li><span>—</span><span>parado</span></li></ul>
+            <div class="toolbar" style="margin:0 0 6px"><h3 style="margin:0">Auto Scaling ao vivo</h3><small id="as-updated" class="muted-small"></small></div>
+            <div id="as-unavailable" class="alert info hidden"></div>
+            <div id="as-live">
+              <div class="as-counters">
+                <div class="as-counter big"><b id="as-inservice">–</b><span>instâncias em serviço</span></div>
+                <div class="as-counter"><b id="as-desired">–</b><span>desejadas</span></div>
+                <div class="as-counter"><b id="as-max">–</b><span>máximo</span></div>
+                <div class="as-counter"><b id="as-cpu">–</b><span>CPU média agora</span></div>
+              </div>
+              <div class="as-alarms" id="as-alarms"></div>
+              <div class="as-chart" id="as-chart"></div>
+              <div class="as-legend"><span class="lg cpu"></span>CPU média (%) <span class="lg inst"></span>instâncias em serviço <span class="lg lim"></span>limites 70% / 25%</div>
+              <h4 class="mini-title">Instâncias do grupo</h4>
+              <ul class="host-list" id="as-instances"></ul>
+              <h4 class="mini-title">Histórico de escala</h4>
+              <ul class="as-activities" id="as-activities"></ul>
+            </div>
           </div>
         </div>
+        <p class="sub" style="margin-top:14px">Alternativas: teste com <b>k6</b> (<code>loadtest/README.md</code>) e o dashboard do CloudWatch (<code>terraform output cloudwatch_dashboard_url</code>).</p>
       </section>
     </main>
 

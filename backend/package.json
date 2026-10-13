@@ -11,6 +11,7 @@
     "test": "node --test --test-force-exit test-api.test.js"
   },
   "dependencies": {
+    "@aws-sdk/client-auto-scaling": "^3.1150.0",
     "@aws-sdk/client-cloudwatch": "^3.1150.0",
     "@aws-sdk/client-dynamodb": "^3.1150.0",
     "@aws-sdk/client-s3": "^3.1150.0",

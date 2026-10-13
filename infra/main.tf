@@ -250,6 +250,17 @@ resource "aws_iam_policy" "app_permissions" {
         Resource = aws_sns_topic.customer_emails.arn
       },
       {
+        # Leitura do Auto Scaling e do CloudWatch para a tela "Auto Scaling ao vivo" do admin
+        Effect = "Allow"
+        Action = [
+          "autoscaling:DescribeAutoScalingGroups",
+          "autoscaling:DescribeScalingActivities",
+          "cloudwatch:DescribeAlarms",
+          "cloudwatch:GetMetricData"
+        ]
+        Resource = "*"
+      },
+      {
         # Métricas de negócio do dashboard (vendas, reservas, e-mails)
         Effect    = "Allow"
         Action    = ["cloudwatch:PutMetricData"]
@@ -678,6 +689,7 @@ resource "aws_launch_template" "app" {
     email_topic_arn     = aws_sns_topic.customer_emails.arn
     app_public_url      = var.acm_certificate_arn != "" ? "https://${aws_lb.app.dns_name}" : "http://${aws_lb.app.dns_name}"
     metrics_namespace   = local.metrics_namespace
+    project_name        = local.project_name
     admin_password      = var.admin_password
     jwt_secret          = random_id.jwt.hex
   }))

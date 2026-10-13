@@ -6,5 +6,6 @@ const router = express.Router();
 
 router.get('/health', controller.health);
 router.get('/stress', requireAdmin, controller.stress);
+router.get('/admin/elasticity', requireAdmin, controller.elasticity);
 
 module.exports = router;

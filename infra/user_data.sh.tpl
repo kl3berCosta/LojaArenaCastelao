@@ -51,6 +51,7 @@ SQS_NOTIFICATIONS_QUEUE_URL=${notify_queue_url}
 SNS_CUSTOMER_EMAIL_TOPIC_ARN=${email_topic_arn}
 APP_PUBLIC_URL=${app_public_url}
 METRICS_NAMESPACE=${metrics_namespace}
+PROJECT_NAME=${project_name}
 ADMIN_PASSWORD=${admin_password}
 JWT_SECRET=${jwt_secret}
 EOF
